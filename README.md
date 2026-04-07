@@ -2,11 +2,11 @@
 
 Produced by Fabio Turco and Lukas Hörtnagl
 
-Documentation and notebooks for the PI dataset of the **cropland station CH-TAN (Tänikon; Fluxnet CH-Tnk)** from November 2023 to June 2025. The research station CH-TAN was part of [Swiss FluxNet](https://www.swissfluxnet.ethz.ch/), operated by the [Grassland Sciences Group, ETH Zurich](https://gl.ethz.ch/). Group leader: [Prof. Nina Buchmann](https://gl.ethz.ch/people/person-detail.nina.html).
+Documentation and notebooks for the PI dataset of the **cropland station CH-TAN (Tänikon; Fluxnet CH-Tnk)** from November 2023 to August 2024. The research station CH-TAN was part of [Swiss FluxNet](https://www.swissfluxnet.ethz.ch/), operated by the [Grassland Sciences Group, ETH Zurich](https://gl.ethz.ch/). Group leader: [Prof. Nina Buchmann](https://gl.ethz.ch/people/person-detail.nina.html).
 
 [Site info CH-TAN](https://www.swissfluxnet.ethz.ch/index.php/sites/site-info-ch-tan/)
 
-This dataset contains ecosystem fluxes measured by the eddy covariance method, meteorological data and detailed management info between from November 2023 to June 2025, encompassing the whole period when the station was active.
+This dataset contains ecosystem fluxes measured by the eddy covariance method, meteorological data and detailed management info between from November 2023 to August 2024, encompassing a winter wheat season and the post-harvest period before the sowing of the next crop.
 
 
 ## Eddy covariance fluxes in this dataset
