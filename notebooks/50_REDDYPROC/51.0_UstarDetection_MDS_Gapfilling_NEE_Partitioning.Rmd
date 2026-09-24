@@ -52,12 +52,17 @@ file_fluxes_meteo <- "../40_FLUX_PROCESSING_CHAIN/46.2_FluxProcessingChain_L3.2_
 
 ```{r}
 filedata <- read_csv(file_fluxes_meteo, show_col_types = FALSE)
-filedata$TIMESTAMP_END <- as.POSIXct(filedata$TIMESTAMP_END, tz = "Etc/GMT-1")
+# TIMESTAMP_END holds CET clock times, which readr parses as UTC: relabel as CET without shifting the clock
+# (as.POSIXct(<POSIXct>, tz = ...) shifts the clock time in R >= 4.3)
+filedata$TIMESTAMP_END <- lubridate::force_tz(as.POSIXct(filedata$TIMESTAMP_END, tz = "UTC"), tzone = "Etc/GMT-1")
 ```
 ## TIME INTERVAL
+
+Dataset period: 17 Oct 2023 00:00 to 23 Aug 2024 00:00 (TIMESTAMP_END, CET). Must match `PERIOD_START` / `PERIOD_END` in `src/config.py`.
+
 ```{r}
-filedata <- filedata %>% filter(TIMESTAMP_END >= as.POSIXct('2023-10-18 12:00:00', tz = 'Etc/GMT-1')
-                                & TIMESTAMP_END <= as.POSIXct('2025-06-05 01:00:00', tz = 'Etc/GMT-1'))
+filedata <- filedata %>% filter(TIMESTAMP_END > as.POSIXct('2023-10-17 00:00:00', tz = 'Etc/GMT-1')
+                                & TIMESTAMP_END <= as.POSIXct('2024-08-23 00:00:00', tz = 'Etc/GMT-1'))
 
 summary(filedata[c('TIMESTAMP_END', 'NEE_L3.1_L3.2_QCF', 'sw_in', 'ta', 'vpd')], 3)
 ```
@@ -97,17 +102,15 @@ head(EddyProc.C$sDATA)
 
 ### Define seasons
 
-Seasons defined based on the management events and growing seasons in 2022 and 2023:
+Seasons defined based on the management events of the winter wheat season 2023-24:
 
--   on 291 2023 wheat sowing
+-   on 290 2023 start of dataset (manure application; wheat sowing on DOY 291)
 -   on 122 2024 wheat height >  30 cm
--   on 208 2024 wheat harvested
--   on 259 2024 grassland established 
--   on 91  2025 grassland canopy is high
+-   on 208 2024 wheat harvested (bare soil until the end of the dataset on 22 Aug 2024)
 
 ```{r}
-y <- c(2023, 2024, 2024, 2024, 2025)
-s <- c(291, 122, 208, 259, 91)
+y <- c(2023, 2024, 2024)
+s <- c(290, 122, 208)
 seasonStarts <- as.data.frame(cbind(s,y))
 seasonFactor <- usCreateSeasonFactorYdayYear(EddyData.F$TIMESTAMP, starts=seasonStarts)
 seasonStartsDate <-fConvertTimeToPosix(data.frame(Year=seasonStarts[, 2],

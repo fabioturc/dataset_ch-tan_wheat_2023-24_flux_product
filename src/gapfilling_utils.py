@@ -12,7 +12,6 @@ Methodology (Modified for CV-Ensemble):
 
 Notes
 -----
-- Removes block bootstrapping in favor of K-fold CV ensemble (Irvin et al. style).
 - If you log-transform y, pass an inverse transform function `inv_y`.
 """
 
@@ -170,43 +169,296 @@ def undersample_target(
     return out, cutoff_value
 
 
-def infer_cv_block_size_from_gaps(
-    s: pd.Series,
-    *,
-    quantile: float = 0.8,
-    fallback: int = 6,
-    min_block: int = 1,
-) -> int:
-    if not (0.0 < quantile < 1.0):
-        raise ValueError("quantile must be in (0, 1)")
-    
-    isna = s.isna().to_numpy()
-    n = int(isna.size)
-    if n == 0:
-        return int(fallback)
+# -----------------------------------------------------------------------------
+# Artificial gap sampling (Irvin et al. 2021) for realistic CV splits
+# -----------------------------------------------------------------------------
+#
+# these helpers hold out windows positioned in REAL TIME on the original
+# series, with lengths drawn from a distribution fitted to the site's own gap
+# structure. Two consequences worth knowing:
+#   * held-out windows have realistic depth in wall-clock terms, so OOF
+#     residuals reflect how the model behaves mid-gap rather than always one
+#     step from an observation;
+#   * the resulting splits are NOT a partition -- each iteration masks
+#     eval_frac independently, so some rows are held out several times and
+#     some never. fit_cv_ensemble and fit_residual_scale below handle this
+#     (residuals are pooled across folds, and min_per_bin counts DISTINCT
+#     rows so repeated near-duplicate residuals don't inflate the bin count).
 
-    # Observed fraction: how much the series gets "compressed" after dropna
-    f_obs = float((~isna).mean())
-    if f_obs <= 0:
-        return int(fallback)
-
+def get_gap_lengths(s: Any) -> np.ndarray:
+    """Lengths of consecutive-NaN runs in a series/array (original index units)."""
+    arr = pd.Series(np.asarray(s, dtype=float))
+    isna = arr.isna()
     if not bool(isna.any()):
-        return int(max(min_block, fallback))
+        return np.array([], dtype=int)
+    run_id = isna.ne(isna.shift()).cumsum()
+    run_len = isna.groupby(run_id).size()
+    run_isna = isna.groupby(run_id).first()
+    return run_len[run_isna].to_numpy().astype(int)
 
-    # Run-length encoding for NA runs (gap lengths in ORIGINAL index units)
-    run_id = pd.Series(isna).ne(pd.Series(isna).shift()).cumsum()
-    run_isna = pd.Series(isna).groupby(run_id).first()
-    run_len = pd.Series(isna).groupby(run_id).size()
-    gaps = run_len[run_isna]
 
-    if gaps.empty:
-        return int(max(min_block, fallback))
+def _geom_pmf(p: float, support: int) -> np.ndarray:
+    from scipy.stats import geom
+    return np.asarray([geom.pmf(x, p) for x in range(support)], dtype=float)
 
-    qv = float(gaps.quantile(quantile))  # in original steps
-    # Convert to approximate equivalent in the DROPNA/compressed series
-    block_clean = int(np.ceil(qv * f_obs))
 
-    return int(max(min_block, block_clean))
+def convex_combine_geom(pmf1: np.ndarray, p: float, alpha: float) -> np.ndarray:
+    """alpha * pmf1 + (1 - alpha) * Geom(p), renormalized."""
+    g = _geom_pmf(p, len(pmf1))
+    cc = alpha * np.asarray(pmf1, dtype=float) + (1.0 - alpha) * g
+    tot = float(cc.sum())
+    return cc / tot if tot > 0 else cc
+
+
+def compile_empirical_gap_dist(
+    gap_lengths: np.ndarray,
+    *,
+    outlier_quant: float = 0.99,
+    smooth_tail_start: float = 0.95,
+    bandwidth: float = 5.0,
+) -> np.ndarray:
+    """
+    Empirical PMF over gap lengths, with the sparse tail smoothed by a KDE.
+    Gaps above `outlier_quant` are dropped (they cannot be validated against
+    anyway -- there is no comparably long observed run to hold out).
+    """
+    gaps = np.asarray(gap_lengths, dtype=int)
+    if gaps.size == 0:
+        raise ValueError("No gaps available to build a gap-length distribution.")
+    gaps = gaps[gaps < np.quantile(gaps, outlier_quant)]
+    gaps = gaps[gaps > 0]
+    if gaps.size == 0:
+        raise ValueError("All gaps removed as outliers; lower outlier_quant.")
+
+    hist = np.bincount(gaps)
+    pmf = hist / hist.sum()
+
+    idx = np.flatnonzero(np.cumsum(pmf) > smooth_tail_start)
+    if idx.size == 0:
+        pmf = pmf.copy()
+        pmf[0] = 0.0
+        return pmf / pmf.sum()
+    smooth_start = int(idx[0])
+
+    try:
+        from sklearn.neighbors import KernelDensity
+    except ImportError:
+        out = pmf.copy()
+        out[0] = 0.0
+        return out / out.sum()
+
+    kd = KernelDensity(bandwidth=bandwidth, kernel="epanechnikov").fit(gaps[:, None])
+    smooth = np.exp(kd.score_samples(np.arange(len(pmf))[:, None]))
+
+    true_tail = pmf[smooth_start:]
+    smooth_tail = smooth[smooth_start:]
+    if smooth_tail.sum() <= 0:
+        out = pmf.copy()
+    else:
+        out = pmf.copy()
+        out[smooth_start:] = smooth_tail * (true_tail.sum() / smooth_tail.sum())
+
+    out[0] = 0.0  # never sample zero-length gaps
+    return out / out.sum()
+
+
+def sample_artificial_gaps(
+    flux_data: Any,
+    sampling_pmf: np.ndarray,
+    *,
+    eval_frac: float = 0.1,
+    rng: Optional[np.random.Generator] = None,
+    overlap_retries: int = 20,
+    max_iter: int = 200_000,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Place non-overlapping artificial gaps into a series until `eval_frac` of
+    the OBSERVED values are masked. Gap lengths are i.i.d. draws from
+    `sampling_pmf`. Existing (real) gaps are ignored when placing, so an
+    artificial window landing next to a real gap effectively extends it --
+    this is realistic, and makes the held-out task slightly harder than the
+    nominal distribution (i.e. conservative for uncertainty estimation).
+    Returns (masked_series, artificially_masked_mask).
+    """
+    rng = np.random.default_rng() if rng is None else rng
+    flux = np.asarray(flux_data, dtype=float)
+    n = flux.size
+    observed = np.isfinite(flux)
+    n_obs = int(observed.sum())
+    if n_obs == 0:
+        raise ValueError("flux_data has no observed values.")
+
+    pmf = np.clip(np.asarray(sampling_pmf, dtype=float), 0.0, None)
+    if pmf.sum() <= 0:
+        raise ValueError("sampling_pmf must have positive mass.")
+    pmf = pmf / pmf.sum()
+    lengths = np.arange(pmf.size)
+
+    masked = np.zeros(n, dtype=bool)
+    n_target = int(np.ceil(eval_frac * n_obs))
+    n_masked_obs = 0
+    it = 0
+
+    while n_masked_obs < n_target and it < max_iter:
+        it += 1
+        L = int(rng.choice(lengths, p=pmf))
+        if L <= 0:
+            continue
+        for _ in range(overlap_retries):
+            start = int(rng.integers(0, n))
+            end = min(start + L, n)
+            if not masked[start:end].any():
+                masked[start:end] = True
+                n_masked_obs += int(observed[start:end].sum())
+                break
+
+    out = flux.copy()
+    out[masked] = np.nan
+    return out, masked
+
+
+def _ecdf_distance(a: Any, b: Any, kind: str = "cvm") -> float:
+    """Cramer-von-Mises ('cvm') or Kolmogorov-Smirnov ('ks') distance."""
+    a = np.sort(np.asarray(a, dtype=float))
+    b = np.sort(np.asarray(b, dtype=float))
+    if a.size == 0 or b.size == 0:
+        return float("inf")
+    allv = np.concatenate([a, b])
+    c1 = np.searchsorted(a, allv, side="right") / a.size
+    c2 = np.searchsorted(b, allv, side="right") / b.size
+    d = np.abs(c1 - c2)
+    return float(d.max()) if kind == "ks" else float(np.sum(d ** 2))
+
+
+def learn_gap_dist(
+    flux_data: Any,
+    *,
+    n_grid: int = 6,
+    n_mc: int = 20,
+    p_add: float = 0.3,
+    dist: str = "cvm",
+    rng: Optional[np.random.Generator] = None,
+    verbose: bool = True,
+) -> np.ndarray:
+    """
+    Fit the distribution to SAMPLE gaps from, such that the gap structure
+    AFTER injection matches the site's real gap structure.
+
+    The correction is needed because injecting gaps into a series that
+    already has gaps produces a union biased toward longer runs (artificial
+    windows merge with real ones). So the sampling distribution has to be
+    biased short: a convex mixture with a geometric, grid-searched over the
+    mixing weight `alpha` and geometric parameter `p`, scored by Monte Carlo.
+
+    The raw empirical PMF is always evaluated as a baseline candidate, so
+    the returned distribution is never worse than not fitting at all.
+    """
+    rng = np.random.default_rng(1000) if rng is None else rng
+    flux = np.asarray(flux_data, dtype=float)
+
+    gaps = get_gap_lengths(flux)
+    if gaps.size == 0:
+        raise ValueError("Series has no gaps; cannot learn a gap distribution.")
+
+    base_pmf = compile_empirical_gap_dist(gaps)
+    target = gaps[gaps < np.quantile(gaps, 0.95)]
+
+    def _score(pmf: np.ndarray) -> float:
+        scores = []
+        for _ in range(n_mc):
+            union, _ = sample_artificial_gaps(flux, pmf, eval_frac=p_add, rng=rng)
+            ug = get_gap_lengths(union)
+            if ug.size == 0:
+                continue
+            ug = ug[ug < np.quantile(ug, 0.95)]
+            scores.append(_ecdf_distance(target, ug, kind=dist))
+        return float(np.mean(scores)) if scores else float("inf")
+
+    best_pmf = base_pmf
+    best_score = _score(base_pmf)
+    base_score = best_score
+
+    alphas = np.linspace(0.01, 0.5, n_grid)
+    p_lo = float(base_pmf[1]) if base_pmf.size > 1 and base_pmf[1] > 0 else 0.1
+    ps = np.linspace(p_lo, min(0.9, 2.0 * p_lo), n_grid)
+
+    for alpha in alphas:
+        for p in ps:
+            cand = convex_combine_geom(base_pmf, p=float(p), alpha=float(alpha))
+            sc = _score(cand)
+            if sc < best_score:
+                best_score, best_pmf = sc, cand
+
+    if verbose:
+        tag = "raw empirical" if best_score == base_score else "fitted mixture"
+        print(f"  Gap distribution: {tag} "
+              f"({dist} distance {best_score:.4f}; raw baseline {base_score:.4f})")
+    return best_pmf
+
+
+def create_artificial_gap_splits(
+    target_full: pd.Series,
+    train_index: pd.Index,
+    sampling_pmf: np.ndarray,
+    *,
+    n_splits: int = 20,
+    eval_frac: float = 0.1,
+    rng: Optional[np.random.Generator] = None,
+    min_test: int = 10,
+    verbose: bool = True,
+) -> Tuple[List[Split], np.ndarray]:
+    """
+    Build CV splits by repeatedly injecting artificial gaps into the FULL
+    series (real time), then mapping the masked timestamps onto positions in
+    the training matrix.
+
+    Args:
+        target_full: target column on the original index, real NaNs intact.
+        train_index: index of the training matrix (subset of target_full).
+        sampling_pmf: gap-length distribution (see learn_gap_dist).
+        n_splits: number of independent masking iterations. Because masking
+            is independent rather than a partition, a row is held out
+            Binomial(n_splits, eval_frac) times -- with n_splits=10 and
+            eval_frac=0.1 about 35% of rows are never validated, so 20+ is
+            recommended to keep distinct coverage high.
+
+    Returns (splits, coverage) where coverage[i] = how many times training
+    row i was held out.
+    """
+    rng = np.random.default_rng() if rng is None else rng
+    flux = target_full.to_numpy(dtype=float)
+
+    pos = target_full.index.get_indexer(train_index)
+    if (pos < 0).any():
+        raise ValueError("train_index contains labels not present in target_full.index")
+
+    splits: List[Split] = []
+    coverage = np.zeros(len(train_index), dtype=int)
+
+    for _ in range(n_splits):
+        _, masked = sample_artificial_gaps(
+            flux, sampling_pmf, eval_frac=eval_frac, rng=rng,
+        )
+        is_test = masked[pos]
+        te = np.flatnonzero(is_test)
+        tr = np.flatnonzero(~is_test)
+        if te.size < min_test:
+            continue
+        splits.append((tr, te))
+        coverage += is_test.astype(int)
+
+    if not splits:
+        raise RuntimeError("No usable artificial-gap splits were generated.")
+
+    if verbose:
+        fracs = [len(te) / len(train_index) for _, te in splits]
+        never = int((coverage == 0).sum())
+        print(f"CV Strategy: artificial gaps in real time; {len(splits)} splits; "
+              f"test fractions {min(fracs):.3f}-{max(fracs):.3f}")
+        print(f"  Coverage: {never}/{len(train_index)} rows never held out "
+              f"({never / len(train_index):.1%}); mean times held out {coverage.mean():.2f}")
+
+    return splits, coverage
 
 
 # -----------------------------------------------------------------------------
@@ -256,51 +508,6 @@ def build_df_for_parcel(data_main, target_flux, letter, selected_features, add_t
 # -----------------------------------------------------------------------------
 # Time-series CV splits
 # -----------------------------------------------------------------------------
-
-def create_block_splits(
-    X: pd.DataFrame,
-    y: Optional[pd.Series] = None,
-    *,
-    split: float = 0.1,
-    block_size: int = 12,
-    random_state: int = 42,
-    shuffle_blocks: bool = True,
-    verbose: bool = True,
-) -> List[Split]:
-    n = len(X)
-    if n == 0:
-        raise ValueError("X is empty")
-    idx = np.arange(n, dtype=int)
-
-    n_folds = int(round(1.0 / split))
-    n_folds = max(2, n_folds)
-
-    block_id = idx // int(block_size)
-    n_blocks = int(block_id.max() + 1)
-    blocks = np.arange(n_blocks, dtype=int)
-
-    rng = np.random.default_rng(random_state)
-    if shuffle_blocks:
-        rng.shuffle(blocks)
-
-    fold_blocks = np.array_split(blocks, n_folds)
-    splits: List[Split] = []
-    achieved = []
-    for fb in fold_blocks:
-        test_mask = np.isin(block_id, fb)
-        test_idx = idx[test_mask]
-        train_idx = idx[~test_mask]
-        splits.append((train_idx, test_idx))
-        achieved.append(len(test_idx) / n)
-
-    if verbose:
-        print(
-            f"Requested split={split:.2f}; n_folds={n_folds}; "
-            f"achieved test fractions ~ {min(achieved):.3f}–{max(achieved):.3f}"
-        )
-
-    return splits
-
 
 def plot_cv_splits(
     X: pd.DataFrame,
@@ -361,7 +568,7 @@ def rfe_selection(
     """
     Recursive Feature Elimination using mean feature_importances_ across folds.
 
-    Scoring uses pooled Out-Of-Fold (OOF) predictions (overall RMSE/R²).
+    Scoring uses mean CV performance across folds (RMSE/R²).
     Returns:
       best_features, feature_ranking, history_df
     """
@@ -378,9 +585,9 @@ def rfe_selection(
     while len(features) > max(min_features, 1):
         iteration += 1
 
-        y_true_oof = []
-        y_pred_oof = []
         importances = []
+        rmse_vals = []
+        r2_vals = []
 
         for tr, te in splits:
             X_tr = X[features].iloc[tr]
@@ -392,37 +599,37 @@ def rfe_selection(
             m.fit(X_tr, y_tr)
             pred = m.predict(X_te)
 
-            # Feature importance (simple + explicit as requested)
+            # Feature importance
             if not hasattr(m, "feature_importances_"):
                 raise AttributeError(
                     "Model has no feature_importances_. "
                     "Use a model that provides it or change the RFE strategy."
                 )
+
             imp = np.asarray(m.feature_importances_, dtype=float)
             if imp.shape[0] != len(features):
-                raise ValueError("feature_importances_ length does not match current feature list.")
+                raise ValueError(
+                    "feature_importances_ length does not match current feature list."
+                )
             importances.append(imp)
 
             # Score on original scale if inv_y is provided
             y_te_s = _as_1d_float(_maybe_inverse(inv_y, y_te))
             pred_s = _as_1d_float(_maybe_inverse(inv_y, pred))
 
-            y_true_oof.append(y_te_s)
-            y_pred_oof.append(pred_s)
+            rmse_vals.append(_rmse(y_te_s, pred_s))
+            r2_vals.append(_r2(y_te_s, pred_s))
 
-        y_true_oof = np.concatenate(y_true_oof)
-        y_pred_oof = np.concatenate(y_pred_oof)
-
-        rmse_oof = _rmse(y_true_oof, y_pred_oof)
-        r2_oof = _r2(y_true_oof, y_pred_oof)
+        rmse_cv = float(np.nanmean(rmse_vals))
+        r2_cv = float(np.nanmean(r2_vals))
 
         history.append(
             {
                 "iteration": iteration,
                 "n_features": len(features),
                 "features": features.copy(),
-                "rmse_oof": rmse_oof,
-                "r2_oof": r2_oof,
+                "rmse_cv": rmse_cv,
+                "r2_cv": r2_cv,
             }
         )
 
@@ -438,7 +645,7 @@ def rfe_selection(
         if verbose:
             print(
                 f"Iter {iteration}: kept={len(features)} removed={remove_feats} "
-                f"RMSE_oof={rmse_oof:.4f} R2_oof={r2_oof:.4f}"
+                f"RMSE_cv={rmse_cv:.4f} R2_cv={r2_cv:.4f}"
             )
 
     # add survivors to ranking (last survivors rank highest)
@@ -453,16 +660,15 @@ def rfe_selection(
         return features.copy(), feature_ranking, hist_df
 
     if score_mode == "rmse":
-        best_row = hist_df.sort_values(["rmse_oof", "n_features"], ascending=[True, True]).iloc[0]
+        best_row = hist_df.sort_values(["rmse_cv", "n_features"], ascending=[True, True]).iloc[0]
         best_features = list(best_row["features"])
         return best_features, feature_ranking, hist_df
 
     if score_mode == "composite":
-        rmse_vals = hist_df["rmse_oof"].to_numpy(float)
-        r2_vals = hist_df["r2_oof"].to_numpy(float)
+        rmse_vals = hist_df["rmse_cv"].to_numpy(float)
+        r2_vals = hist_df["r2_cv"].to_numpy(float)
         nfeat = hist_df["n_features"].to_numpy(float)
 
-        # safe min-max normalization
         def _minmax(a):
             a_min, a_max = float(np.min(a)), float(np.max(a))
             if np.isclose(a_min, a_max):
@@ -490,34 +696,95 @@ def fit_cv_ensemble(
     splits: List[Split],
     *,
     inv_y: Optional[Callable[[Any], Any]] = None,
-) -> Tuple[pd.Series, List[object]]:
+) -> Tuple[pd.Series, List[object], pd.DataFrame, np.ndarray]:
     """
     Trains one model per CV split and generates Out-Of-Fold predictions.
-    
+
+    Handles splits that are NOT a partition (artificial-gap splits mask
+    eval_frac independently each iteration, so a row can be held out several
+    times or never). Every OOF prediction is kept in `records` rather than
+    overwritten; `oof` averages them per row for plotting/diagnostics.
+
     Returns
     -------
     oof : pd.Series
-        Aligned with X.index, containing predictions when that row was in 'test'.
+        Aligned with X.index. Mean OOF prediction per row, NaN where the row
+        was never held out. With a true partition this is exactly the single
+        OOF prediction, so behaviour is unchanged for block splits.
     models : List[object]
-        The list of trained models (one per split). 
-        These form the 'Ensemble' for uncertainty estimation.
+        One trained model per split -- the ensemble used for sigma_ens.
+    records : pd.DataFrame
+        Long format, one row per (fold, held-out row): [fold, pos, yhat].
+        This is what residual calibration should use, since it preserves
+        every residual instead of collapsing repeats.
+    coverage : np.ndarray
+        How many times each training row was held out.
     """
-    oof = pd.Series(index=X.index, dtype=float)
-    models = []
-    
-    # Iterate through folds
-    for tr, te in splits:
-        # 1. Train on this fold's training set
+    n = len(X)
+    sum_pred = np.zeros(n, dtype=float)
+    coverage = np.zeros(n, dtype=int)
+    models: List[object] = []
+    recs: List[pd.DataFrame] = []
+
+    for k, (tr, te) in enumerate(splits):
         m = model_factory()
         m.fit(X.iloc[tr], y_train.iloc[tr])
         models.append(m)
-        
-        # 2. Predict on this fold's test set (OOF)
+
         pred = m.predict(X.iloc[te]).astype(float)
-        pred = _maybe_inverse(inv_y, pred)
-        oof.iloc[te] = _as_1d_float(pred)
-        
-    return oof, models
+        pred = _as_1d_float(_maybe_inverse(inv_y, pred))
+
+        te = np.asarray(te, dtype=int)
+        sum_pred[te] += pred
+        coverage[te] += 1
+        recs.append(pd.DataFrame({"fold": k, "pos": te, "yhat": pred}))
+
+    denom = np.where(coverage == 0, 1, coverage)
+    oof = pd.Series(np.where(coverage > 0, sum_pred / denom, np.nan), index=X.index)
+    records = (pd.concat(recs, ignore_index=True) if recs
+               else pd.DataFrame(columns=["fold", "pos", "yhat"]))
+    return oof, models, records, coverage
+
+
+def _records_metrics(
+    y_true_vals: np.ndarray,
+    records: pd.DataFrame,
+    row_mask: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    """
+    Per-fold RMSE/MAE/R2 from OOF records (correct even when folds overlap).
+
+    row_mask, if given, is a boolean array indexed the same way as
+    y_true_vals (i.e. by position in the training matrix) -- e.g. parcel=='A'
+    -- and restricts the metric to that subset. Folds with zero matching
+    rows are skipped rather than producing NaN/empty-mean warnings.
+
+    "n" in the returned dict is the number of DISTINCT rows that actually
+    contributed (post-mask, post-held-out), not the size of row_mask itself.
+    """
+    rmse_vals, mae_vals, r2_vals = [], [], []
+    seen_pos = set()
+    for _, g in records.groupby("fold"):
+        pos = g["pos"].to_numpy(dtype=int)
+        yp = g["yhat"].to_numpy(dtype=float)
+        if row_mask is not None:
+            keep = row_mask[pos]
+            if not keep.any():
+                continue
+            pos, yp = pos[keep], yp[keep]
+        yt = y_true_vals[pos]
+        rmse_vals.append(_rmse(yt, yp))
+        mae_vals.append(_mae(yt, yp))
+        r2_vals.append(_r2(yt, yp))
+        seen_pos.update(pos.tolist())
+    if not rmse_vals:
+        return {"rmse": float("nan"), "mae": float("nan"), "r2": float("nan"), "n": 0}
+    return {
+        "rmse": float(np.nanmean(rmse_vals)),
+        "mae": float(np.nanmean(mae_vals)),
+        "r2": float(np.nanmean(r2_vals)),
+        "n": len(seen_pos),
+    }
 
 
 @dataclass
@@ -538,16 +805,39 @@ class ResidualScaleModel:
 
 
 def fit_residual_scale(
-    y_obs_raw: pd.Series,
-    yhat_oof_raw: pd.Series,
+    y_obs_raw: Any,
+    yhat_oof_raw: Any,
     *,
     method: str = "by_pred_quantile",
     q: Iterable[float] = (0.0, 0.5, 0.8, 0.95, 1.0),
     min_per_bin: int = 200,
+    row_ids: Optional[np.ndarray] = None,
 ) -> ResidualScaleModel:
-    df = pd.DataFrame({"y": y_obs_raw, "yhat": yhat_oof_raw}).dropna()
-    resid = (df["y"] - df["yhat"]).to_numpy(dtype=float)
+    """
+    Residual scale sigma_resid(yhat), binned by predicted-flux quantile.
 
+    If `row_ids` is given, inputs are treated as flat arrays of pooled OOF
+    records (one entry per fold-row pair) and `min_per_bin` is checked
+    against the number of DISTINCT rows in a bin rather than the raw count.
+    That matters with non-partition splits: a row held out twice contributes
+    two near-identical residuals (same features, models sharing most of
+    their training data), so the raw count overstates how much independent
+    information the bin actually holds -- most acutely in the top quantile
+    bin, which is both the smallest and the one that dominates the budget.
+    """
+    if row_ids is None:
+        df = pd.DataFrame({"y": y_obs_raw, "yhat": yhat_oof_raw}).dropna()
+        y = df["y"].to_numpy(dtype=float)
+        yh = df["yhat"].to_numpy(dtype=float)
+        rid = np.arange(len(df))
+    else:
+        y = _as_1d_float(y_obs_raw)
+        yh = _as_1d_float(yhat_oof_raw)
+        rid = np.asarray(row_ids)
+        keep = np.isfinite(y) & np.isfinite(yh)
+        y, yh, rid = y[keep], yh[keep], rid[keep]
+
+    resid = y - yh
     sigma_global = float(np.nanstd(resid, ddof=1))
 
     if method == "global":
@@ -557,20 +847,19 @@ def fit_residual_scale(
     if qs[0] != 0.0: qs = np.insert(qs, 0, 0.0)
     if qs[-1] != 1.0: qs = np.append(qs, 1.0)
 
-    edges = np.quantile(df["yhat"].to_numpy(dtype=float), qs)
+    edges = np.quantile(yh, qs)
     edges[0] = -np.inf
     edges[-1] = np.inf
 
-    bin_id = np.digitize(df["yhat"].to_numpy(dtype=float), edges, right=True) - 1
+    bin_id = np.digitize(yh, edges, right=True) - 1
     n_bins = len(edges) - 1
 
     sigmas = np.full(n_bins, sigma_global, dtype=float)
     for b in range(n_bins):
         mask = bin_id == b
-        if mask.sum() < min_per_bin:
+        if int(np.unique(rid[mask]).size) < min_per_bin:
             continue
-        r = resid[mask]
-        sigmas[b] = float(np.nanstd(r, ddof=1))
+        sigmas[b] = float(np.nanstd(resid[mask], ddof=1))
 
     return ResidualScaleModel(
         method="by_pred_quantile",
@@ -586,13 +875,127 @@ def combine_gapfill_sigma(
     *,
     min_sigma: float = 0.0,
 ) -> np.ndarray:
-    """sigma_gf = sqrt(sigma_ens^2 + sigma_resid^2), with optional floor."""
+    """
+    sigma_gf = sqrt(sigma_ens^2 + sigma_resid^2), with optional floor.
+
+    This is the POINTWISE (per-half-hour) uncertainty, for per-row bands.
+    For a cumulative/seasonal total do NOT quadrature-sum this: use
+    sigma_ens_cumulative + cumulative_gapfill_uncertainty below, which
+    accumulates the structural term correctly.
+    """
     sigma_ens = _as_1d_float(sigma_ens)
     sigma_resid = _as_1d_float(sigma_resid)
     sgf = np.sqrt(np.square(sigma_ens) + np.square(sigma_resid))
     if min_sigma > 0:
         sgf = np.maximum(sgf, float(min_sigma))
     return sgf
+
+
+# -----------------------------------------------------------------------------
+# Cumulative uncertainty (correlation-aware structural term)
+# -----------------------------------------------------------------------------
+
+def predict_ensemble_matrix(
+    ensemble_models: List[object],
+    X_full: pd.DataFrame,
+    inv_y: Optional[Callable[[Any], Any]] = None,
+) -> np.ndarray:
+    """Predictions from every ensemble member, stacked as (K models, T rows)."""
+    preds = np.full((len(ensemble_models), len(X_full)), np.nan, dtype=float)
+    for i, m in enumerate(ensemble_models):
+        p = m.predict(X_full).astype(float)
+        preds[i, :] = _as_1d_float(_maybe_inverse(inv_y, p))
+    return preds
+
+
+def sigma_ens_cumulative(
+    fit: "GapfillFit",
+    df_pred: pd.DataFrame,
+    *,
+    is_gap: Optional[pd.Series] = None,
+    return_paths: bool = False,
+) -> Any:
+    """
+    Structural uncertainty of the CUMULATIVE sum: keep each ensemble
+    member's full predicted trajectory, cumsum each one separately (masked
+    to gap-filled rows), and take the spread across the K cumulative sums.
+
+    This is the whole point of carrying the ensemble through: collapsing to
+    a pointwise std and quadrature-summing assumes the structural error
+    re-randomizes every half hour, when in fact a member biased in some
+    regime stays biased for the entire gap. Accumulating the member paths
+    captures that correlation empirically, with no assumed correlation
+    length -- and it makes the result sensitive to gap CONTIGUITY, not just
+    to how many rows are filled.
+
+    Set return_paths=True to also get the (K, T) matrix of cumulative paths,
+    e.g. to build a parcel A - B contrast per member.
+    """
+    _check_columns(df_pred, fit.feature_cols, name="df_pred")
+    preds = predict_ensemble_matrix(fit.ensemble_models, df_pred[fit.feature_cols], inv_y=fit.inv_y)
+
+    if is_gap is not None:
+        mask = is_gap.reindex(df_pred.index).fillna(False).to_numpy(dtype=bool)
+        preds = preds * mask[None, :]
+
+    cum_paths = np.cumsum(preds, axis=1)
+    sigma_cum = pd.Series(np.std(cum_paths, axis=0, ddof=1),
+                          index=df_pred.index, name="sigma_ens_cum")
+    if return_paths:
+        return sigma_cum, cum_paths
+    return sigma_cum
+
+
+def cumulative_gapfill_uncertainty(
+    y_obs: pd.Series,
+    y_hat: pd.Series,
+    sigma_obs: pd.Series,
+    sigma_resid: pd.Series,
+    sigma_ens_cum: pd.Series,
+    is_gap: pd.Series,
+    *,
+    z: float = 1.96,
+) -> pd.DataFrame:
+    """
+    Cumulative flux and its uncertainty.
+
+        sigma_err(T)^2 = sigma_ens_cum(T)^2
+                       + sum_{gap-filled, t<=T} sigma_resid(t)^2
+                       + sum_{measured,   t<=T} sigma_obs(t)^2
+
+    sigma_obs and sigma_resid stay plain quadrature sums (their errors are
+    short-correlated and genuinely do average down); only the structural
+    term needs the trajectory treatment.
+
+    Returns cum_flux / sigma_err / ci_low / ci_high; read the last row for
+    the seasonal total, or plot the whole thing as a time-resolved band.
+    """
+    idx = y_obs.index
+    is_gap = is_gap.reindex(idx).fillna(False)
+
+    cum_flux = y_obs.where(~is_gap, y_hat).cumsum()
+    sq_obs = (sigma_obs.reindex(idx).where(~is_gap, 0.0).fillna(0.0) ** 2).cumsum()
+    sq_res = (sigma_resid.reindex(idx).where(is_gap, 0.0).fillna(0.0) ** 2).cumsum()
+    sq_ens = sigma_ens_cum.reindex(idx).ffill().fillna(0.0) ** 2
+
+    sigma_err = np.sqrt(sq_obs + sq_res + sq_ens)
+    return pd.DataFrame({
+        "cum_flux": cum_flux,
+        "sigma_err": sigma_err,
+        "ci_low": cum_flux - z * sigma_err,
+        "ci_high": cum_flux + z * sigma_err,
+    })
+
+
+def sigma_turb(cum_totals: Iterable[float]) -> float:
+    """u*-threshold term: half the range across the U16/U50/U84 totals."""
+    vals = np.asarray(list(cum_totals), dtype=float)
+    return float((np.nanmax(vals) - np.nanmin(vals)) / 2.0)
+
+
+def combine_with_turb(sigma_err_final: float, turb: float) -> float:
+    """Combine propagated flux uncertainty with sigma_turb in quadrature."""
+    return float(np.sqrt(float(sigma_err_final) ** 2 + float(turb) ** 2))
 
 
 # -----------------------------------------------------------------------------
@@ -605,71 +1008,150 @@ class GapfillFit:
     feature_cols: List[str]
     model_factory: Callable[[], object]
     model_final: object
-    ensemble_models: List[object]   # Contains the K models from CV folds
+    ensemble_models: List[object]   # The K models -> feeds sigma_ens AND the
+                                    # cumulative member-path spread
     X_tr: pd.DataFrame
     y_tr: pd.Series
     y_raw: pd.Series
     inv_y: Optional[Callable[[Any], Any]]
     splits: List[Split]
-    yhat_oof_raw: pd.Series
+    yhat_oof_raw: pd.Series         # mean OOF per row (NaN if never held out)
     resid_model: ResidualScaleModel
     random_state: int
+    oof_records: Optional[pd.DataFrame] = None   # long [fold, pos, yhat]
+    oof_coverage: Optional[np.ndarray] = None    # times each row was held out
+    sampling_pmf: Optional[np.ndarray] = None    # learned gap-length pmf
+
+    def oof_frame(self) -> pd.DataFrame:
+        """
+        Pooled OOF residuals as a tidy frame: timestamp, fold, y, yhat, resid.
+        Use this for residual diagnostics (ACF, bias by regime) rather than
+        yhat_oof_raw, which averages away repeated held-out predictions.
+        """
+        if self.oof_records is None or self.oof_records.empty:
+            raise ValueError("No OOF records stored on this fit.")
+        pos = self.oof_records["pos"].to_numpy(dtype=int)
+        y = self.y_raw.to_numpy(dtype=float)[pos]
+        out = pd.DataFrame({
+            "timestamp": self.X_tr.index[pos],
+            "fold": self.oof_records["fold"].to_numpy(),
+            "y": y,
+            "yhat": self.oof_records["yhat"].to_numpy(dtype=float),
+        })
+        out["resid"] = out["y"] - out["yhat"]
+        return out
 
 
 # -----------------------------------------------------------------------------
 # Internal Plotting Helper (Triggered inside fit_gapfill_ts)
 # -----------------------------------------------------------------------------
 
+_DEFAULT_GROUP_COLORS = {'A': "#D55E00", 'B': "#0072B2"}
+_DEFAULT_GROUP_LABELS = {'A': "BAU", 'B': "VRA"}
+
+
+def _panel_label(ax, letter: str) -> None:
+    """Bold (a)/(b)/... panel label, placed where a title would go."""
+    ax.text(-0.08, 1.05, f"({letter})", transform=ax.transAxes,
+            fontsize=13, fontweight='bold', va='bottom', ha='left')
+
+
 def _plot_internal_diagnostics(
-    y_obs: pd.Series, 
-    y_pred: pd.Series, 
-    ensemble_models: List[object], 
-    model_final: object,         
-    X: pd.DataFrame,             
-    inv_y: Optional[Callable],    
-    feature_cols: List[str], 
-    target_name: str
+    y_raw: pd.Series,
+    oof_records: pd.DataFrame,
+    ensemble_models: List[object],
+    model_final: object,
+    X: pd.DataFrame,
+    inv_y: Optional[Callable],
+    feature_cols: List[str],
+    target_name: str,
+    group_vals: Optional[pd.Series] = None,
+    group_colors: Optional[Dict[str, str]] = None,
+    group_labels: Optional[Dict[str, str]] = None,
 ):
     """
-    Plots 2x2 Diagnostics:
-    1. Obs vs Pred (Scatter)
-    2. Feature Importance
-    3. Ensemble Time Series (Instantaneous)
-    4. Ensemble Time Series (Cumulative)
+    Plots 2x2 diagnostics. Panels are labeled (a)-(d) instead of titled:
+    (a) Obs vs Pred (Scatter) -- raw per-fold OOF predictions, one point per
+        (fold, held-out row) pair, matching the metrics printed by
+        fit_gapfill_ts. NOT the row-averaged series: averaging repeated OOF
+        predictions before scoring understates the error a single
+        fold-model actually makes. Colored by `group_vals` (e.g. parcel
+        identity) when given, with overall + per-group RMSE/MAE/R2
+        annotated (per-group metrics use the same fold-then-average method
+        as the overall number -- see _records_metrics).
+
+        group_vals must be indexed like X (X.index), NOT a column of X --
+        e.g. parcel identity ('A'/'B') typically isn't a model feature, so
+        it has to be supplied separately from whatever full dataframe it
+        actually lives in.
+    (b) Feature Importance
+    (c) Ensemble Time Series (Instantaneous)
+    (d) Ensemble Time Series (Cumulative)
     """
     import matplotlib.pyplot as plt
     from scipy.stats import linregress
     import os
 
-    # Create 2x2 Grid
+    group_colors = group_colors or _DEFAULT_GROUP_COLORS
+    group_labels = group_labels or _DEFAULT_GROUP_LABELS
+
+    # define the fontsite for the plots
+    plt.rcParams.update({'font.size': 12})
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-    
-    # --- Plot 1: Obs vs Pred (Global OOF) ---
+
+    # --- (a) Obs vs Pred (raw per-fold OOF), colored by group ---
     ax1 = axes[0, 0]
-    # CALCULATE METRICS 
-    rmse_val = _rmse(y_obs, y_pred)
-    mae_val  = _mae(y_obs, y_pred)
-    r2_score_val = _r2(y_obs, y_pred)
-    # Prep plot data
-    df_plot = pd.DataFrame({"Obs": y_obs, "Pred": y_pred}).dropna()
+    y_vals = y_raw.to_numpy(dtype=float)
+    pos = oof_records["pos"].to_numpy(dtype=int)
+    obs_raw = y_vals[pos]
+    pred_raw = oof_records["yhat"].to_numpy(dtype=float)
+
+    group_arr = group_vals.reindex(X.index).to_numpy() if group_vals is not None else None
+    group_oof = group_arr[pos] if group_arr is not None else None
+
+    df_plot = pd.DataFrame({"Obs": obs_raw, "Pred": pred_raw})
+    if group_oof is not None:
+        df_plot["group"] = group_oof
+    df_plot = df_plot.dropna(subset=["Obs", "Pred"])
+
+    overall = _records_metrics(y_vals, oof_records)
+    metric_lines = [f"Overall: RMSE={overall['rmse']:.3f}  "
+                     f"MAE={overall['mae']:.3f}  R\u00b2={overall['r2']:.3f}"]
+
     if len(df_plot) > 1:
         x, y = df_plot["Pred"], df_plot["Obs"]
-        rmse = np.sqrt(np.mean((y - x)**2))
         slope, intercept, r_val, p_val, std_err = linregress(x, y)
-        
-        ax1.scatter(x, y, alpha=0.2, s=10, c='k', label='Data')
+
+        if group_oof is not None:
+            for key in sorted(group_colors):
+                m_plot = df_plot["group"] == key
+                if m_plot.any():
+                    label = f"{group_labels.get(key, key)}"
+                    ax1.scatter(df_plot.loc[m_plot, "Pred"], df_plot.loc[m_plot, "Obs"],
+                                alpha=0.25, s=10, c=group_colors[key], label=label)
+                row_mask = (group_arr == key)
+                m = _records_metrics(y_vals, oof_records, row_mask=row_mask)
+                if m["n"] > 0:
+                    metric_lines.append(
+                        f"{group_labels.get(key, key)}: "
+                        f"RMSE={m['rmse']:.3f}  MAE={m['mae']:.3f}  R\u00b2={m['r2']:.3f}"
+                    )
+        else:
+            ax1.scatter(x, y, alpha=0.15, s=8, c='k', label='Data (raw per-fold OOF)')
+
         min_v, max_v = min(x.min(), y.min()), max(x.max(), y.max())
-        ax1.plot([min_v, max_v], [min_v, max_v], 'k--', lw=1)
-        ax1.plot(np.array([min_v, max_v]), slope * np.array([min_v, max_v]) + intercept, 'r-', lw=2, label=f"Fit (Pearson r={r_val:.2f})")
-        
-        ax1.set_title(f"1. Global Performance (OOF)\nRMSE={rmse_val:.4f} | MAE={mae_val:.4f} | R²={r2_score_val:.3f}")
-        ax1.set_xlabel("Predicted")
-        ax1.set_ylabel("Observed")
-        ax1.legend()
+        ax1.plot([min_v, max_v], [min_v, max_v], 'k--', lw=1, label='1:1')
+        ax1.plot(np.array([min_v, max_v]), slope * np.array([min_v, max_v]) + intercept,
+                  'r-', lw=1.5, label=f"Fit (r={r_val:.2f})")
+        ax1.set_xlabel(f"Predicted {target_name}")
+        ax1.set_ylabel(f"Observed {target_name}")
+        ax1.legend(loc='lower right', frameon=False)
+        ax1.text(0.03, 0.97, "\n".join(metric_lines), transform=ax1.transAxes, va='top', ha='left')
     else:
         ax1.text(0.5, 0.5, "No Data", ha='center')
+    _panel_label(ax1, 'a')
 
-    # --- Plot 2: Feature Importance ---
+    # --- (b) Feature Importance ---
     ax2 = axes[0, 1]
     importances = []
     for m in ensemble_models:
@@ -681,53 +1163,57 @@ def _plot_internal_diagnostics(
             for f, score in scores.items():
                 if f in feature_cols: imp[feature_cols.index(f)] = score
             importances.append(imp)
-            
+
     if importances:
         avg_imp = np.mean(importances, axis=0)
         std_imp = np.std(importances, axis=0)
-        # Top 10
-        indices = np.argsort(avg_imp)[-10:] 
+        indices = np.argsort(avg_imp)[-10:]
         ax2.barh(range(len(indices)), avg_imp[indices], xerr=std_imp[indices], align='center', capsize=3)
         ax2.set_yticks(range(len(indices)))
         ax2.set_yticklabels(np.array(feature_cols)[indices])
-        ax2.set_title(f"2. Top 10 Features\n(Avg of {len(ensemble_models)} Folds)")
+        ax2.set_xlabel(f"Mean importance (gain), {len(ensemble_models)} folds")
     else:
         ax2.text(0.5, 0.5, "Importance N/A", ha='center')
+    _panel_label(ax2, 'b')
 
-    # --- 3 & 4. Time Series Predictions ---
-    # Sort X by time so lines connect correctly
+    # --- (c) & (d): Time Series Predictions ---
     X_sorted = X.sort_index()
-    # Generate Predictions 
     ens_preds = []
     for m in ensemble_models:
         p = m.predict(X_sorted)
         if inv_y: p = inv_y(p)
         ens_preds.append(_as_1d_float(p))
-        
+
     p_final = model_final.predict(X_sorted)
     if inv_y: p_final = inv_y(p_final)
     p_final = _as_1d_float(p_final)
     x_axis = X_sorted.index
-    # Plot 3: Instantaneous
+
     ax3 = axes[1, 0]
     for p in ens_preds:
-        ax3.plot(x_axis, p, color='gray', alpha=0.5)
+        # add line for legend only for the first member
+        label = 'CV ensemble members' if p is ens_preds[0] else None
+        ax3.plot(x_axis, p, color='gray', alpha=0.5, label=label)
     ax3.plot(x_axis, p_final, color='red', alpha=1, label='Final Model')
     ax3.tick_params(axis='x', rotation=45)
-    ax3.set_title("3. Ensemble Predictions (Training Data)")
     ax3.set_ylabel(f"{target_name}")
-    # Plot 4: Cumulative
+    ax3.legend(frameon=False)
+    _panel_label(ax3, 'c')
+
     ax4 = axes[1, 1]
     for p in ens_preds:
-        ax4.plot(x_axis, np.cumsum(p), color='gray', alpha=0.5)
+        # add line for legend only for the first member
+        label = 'CV ensemble members' if p is ens_preds[0] else None
+        ax4.plot(x_axis, np.cumsum(p), color='gray', alpha=0.5, label=label)
     ax4.plot(x_axis, np.cumsum(p_final), color='red', label='Final Model')
     ax4.tick_params(axis='x', rotation=45)
-    ax4.set_title("4. Cumulative Sum Divergence (Training Data)")
     ax4.set_ylabel(f"Cum. {target_name}")
-    ax4.legend()
+    ax4.legend(frameon=False)
+    _panel_label(ax4, 'd')
+
     plt.tight_layout()
     save_path = f'plots/gapfilling_diagnostics_{target_name}.png'
-    os.makedirs(os.path.dirname(save_path), exist_ok=True) # create directory if it doesn't exist
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=300)
     plt.show()
 
@@ -742,19 +1228,37 @@ def fit_gapfill_ts(
     undersample: bool = False,
     undersample_quantile: float = 0.8,
     undersample_fraction: float = 0.5,
-    cv_split: float = 0.1,
-    cv_block_size: Optional[int] = None,
-    cv_block_quantile: float = 0.8,
-    cv_block_fallback: int = 6,
+    n_splits: int = 20,
+    eval_frac: float = 0.1,
+    gap_dist_fit: bool = True,
+    gap_dist_n_grid: int = 6,
+    gap_dist_n_mc: int = 20,
+    sampling_pmf: Optional[np.ndarray] = None,
     random_state: int = 42,
     resid_method: str = "by_pred_quantile",
     resid_q: Iterable[float] = (0.0, 0.5, 0.8, 0.95, 1.0),
-    resid_min_per_bin: int = 200,
+    resid_min_per_bin: int = 100,
+    plot_group_col: Optional[str] = "parcel",
+    plot_group_colors: Optional[Dict[str, str]] = None,
+    plot_group_labels: Optional[Dict[str, str]] = None,
     verbose: bool = True,
     plot: bool = True
 ) -> GapfillFit:
     """
-    Fit a final model + uncertainty components using CV Ensemble.
+    Fit a final model + uncertainty components using a CV ensemble.
+
+    CV splits hold out windows positioned in REAL TIME, with lengths drawn
+    from a distribution fitted to the site's own gap structure (Irvin et al.
+    2021). Held-out windows then have realistic depth, so OOF residuals
+    reflect mid-gap behaviour rather than always sitting one step from an
+    observation. This is NOT a partition: with n_splits=20, eval_frac=0.1
+    roughly 12% of rows are never held out and others are held out several
+    times, which is why min_per_bin (in fit_residual_scale) counts distinct
+    rows rather than raw residual count, and why OOF metrics are computed
+    per (fold, row) pair rather than on a row-averaged series.
+
+    Pass a precomputed `sampling_pmf` (or gap_dist_fit=False) to skip the
+    grid search -- useful when refitting the same series repeatedly.
     """
     _check_columns(df, [target_col] + list(feature_cols), name="df")
 
@@ -789,20 +1293,30 @@ def fit_gapfill_ts(
     X_tr = df_train[feature_cols].copy()
     y_tr = pd.Series(df_train["_y_train"].to_numpy(float), index=df_train.index)
 
-    # CV Splits & Block Size Calculation
-    if cv_block_size is None:
-        cv_block_size = infer_cv_block_size_from_gaps(
-            out[target_col], quantile=cv_block_quantile, fallback=cv_block_fallback,
-        )
-        msg_source = f"Inferred from gaps (q={cv_block_quantile})"
-    else:
-        msg_source = "User defined"
-        
-    if verbose:
-        print(f"CV Strategy: Block Size = {cv_block_size} ({msg_source})")
+    # CV Splits: windows positioned in real time, lengths from the site's
+    # own gap-length distribution
+    rng = np.random.default_rng(random_state)
 
-    splits = create_block_splits(
-        X_tr, split=cv_split, block_size=cv_block_size, random_state=random_state, verbose=verbose,
+    if sampling_pmf is None:
+        if gap_dist_fit:
+            sampling_pmf = learn_gap_dist(
+                out[target_col].to_numpy(dtype=float),
+                n_grid=gap_dist_n_grid, n_mc=gap_dist_n_mc,
+                rng=rng, verbose=verbose,
+            )
+        else:
+            sampling_pmf = compile_empirical_gap_dist(get_gap_lengths(out[target_col]))
+            if verbose:
+                print("  Gap distribution: raw empirical (grid search skipped)")
+
+    splits, oof_coverage = create_artificial_gap_splits(
+        target_full=out[target_col],
+        train_index=X_tr.index,
+        sampling_pmf=sampling_pmf,
+        n_splits=n_splits,
+        eval_frac=eval_frac,
+        rng=rng,
+        verbose=verbose,
     )
 
     # Plot CV Splits
@@ -813,34 +1327,42 @@ def fit_gapfill_ts(
     # Fit CV Ensemble
     if verbose:
         print(f"Training CV Ensemble ({len(splits)} folds) & generating OOF predictions...")
-        
-    yhat_oof_raw, ensemble_models = fit_cv_ensemble(
-        model_factory=model_factory, 
-        X=X_tr, 
-        y_train=y_tr, 
-        splits=splits, 
-        inv_y=inv_y
-    )
 
-    # Calculate and print performance metrics 
-    rmse_score = _rmse(y_raw, yhat_oof_raw)
-    mae_score = _mae(y_raw, yhat_oof_raw) 
-    r2_score = _r2(y_raw, yhat_oof_raw)
+    yhat_oof_raw, ensemble_models, oof_records, coverage = fit_cv_ensemble(
+        model_factory=model_factory,
+        X=X_tr,
+        y_train=y_tr,
+        splits=splits,
+        inv_y=inv_y,
+    )
+    if oof_coverage is None:
+        oof_coverage = coverage
+
+    # Performance metrics, computed per fold from the pooled records so
+    # overlapping folds are scored correctly
+    cv_metrics = _records_metrics(y_raw.to_numpy(dtype=float), oof_records)
+    rmse_score = cv_metrics["rmse"]
+    mae_score = cv_metrics["mae"]
+    r2_score = cv_metrics["r2"]
     if verbose:
         print("-" * 40)
-        print(f"Gapfilling performance (CV-Ensemble OOF):")
+        print(f"Gapfilling performance (mean across CV folds):")
         print(f"  Target: {target_col}")
         print(f"  RMSE:   {rmse_score:.4f}")
         print(f"  MAE:    {mae_score:.4f}")
         print(f"  R2:     {r2_score:.4f}")
         print("-" * 40)
 
+    # Residual scale from ALL pooled OOF residuals, with min_per_bin gated on
+    # distinct rows (see fit_residual_scale docstring)
+    _pos = oof_records["pos"].to_numpy(dtype=int)
     resid_model = fit_residual_scale(
-        y_obs_raw=y_raw,
-        yhat_oof_raw=yhat_oof_raw,
+        y_obs_raw=y_raw.to_numpy(dtype=float)[_pos],
+        yhat_oof_raw=oof_records["yhat"].to_numpy(dtype=float),
         method=resid_method,
         q=resid_q,
         min_per_bin=resid_min_per_bin,
+        row_ids=_pos,
     )
 
     # Final Model (Best Estimate trained on all data)
@@ -851,16 +1373,15 @@ def fit_gapfill_ts(
 
     # Plots for diagnostics
     if plot:
-        _plot_internal_diagnostics(
-            y_obs=y_raw,
-            y_pred=yhat_oof_raw,
-            ensemble_models=ensemble_models,
-            model_final=m_final,           
-            X=X_tr,                        
-            inv_y=inv_y,                   
-            feature_cols=list(feature_cols),
-            target_name=target_col
-        )
+            group_vals = None
+            if plot_group_col is not None and plot_group_col in out.columns:
+                group_vals = out[plot_group_col].reindex(X_tr.index)
+            _plot_internal_diagnostics(
+                y_raw=y_raw, oof_records=oof_records, ensemble_models=ensemble_models,
+                model_final=m_final, X=X_tr, inv_y=inv_y, feature_cols=list(feature_cols),
+                target_name=target_col, group_vals=group_vals,
+                group_colors=plot_group_colors, group_labels=plot_group_labels,
+            )
 
     return GapfillFit(
         target_col=target_col,
@@ -876,6 +1397,9 @@ def fit_gapfill_ts(
         yhat_oof_raw=yhat_oof_raw,
         resid_model=resid_model,
         random_state=int(random_state),
+        oof_records=oof_records,
+        oof_coverage=oof_coverage,
+        sampling_pmf=sampling_pmf,
     )
 
 
@@ -885,46 +1409,49 @@ def apply_gapfill_ts(
     *,
     prefix: str = "GF",
     min_sigma: float = 0.0,
+    is_gap: Optional[pd.Series] = None,
 ) -> pd.DataFrame:
     """
     Apply the fitted model.
     - Prediction = fit.model_final
     - Sigma_Ens = StdDev of predictions from fit.ensemble_models (CV models)
+
+    Also emits {prefix}_sigmaEnsCum: the cumulative structural uncertainty
+    from the member paths, masked to gap-filled rows. Reuses the per-member
+    predictions already computed for sigma_ens -- no extra model.predict()
+    calls. Use sigmaEnsCum -- NOT a quadrature sum of sigmaGF -- with
+    cumulative_gapfill_uncertainty for seasonal totals.
+
+    Which rows count as "gap-filled" is is_gap = y_obs.isna() & y_hat.notna().
+    y_hat is always computed here; y_obs is taken from df_pred[fit.target_col]
+    if that column is present (it is whenever df_pred is a full site/parcel
+    dataframe rather than a features-only slice), so is_gap is derived
+    automatically in the common case -- no second call needed. Pass `is_gap`
+    explicitly only to override this, e.g. a custom definition of "gap", or
+    if df_pred genuinely doesn't carry the target column.
     """
     _check_columns(df_pred, fit.feature_cols, name="df_pred")
 
     out = df_pred.copy()
     X_full = out[fit.feature_cols].copy()
 
-    yhat = np.full(len(out), np.nan, dtype=float)
-    sigma_ens = np.full(len(out), np.nan, dtype=float)
-    sigma_resid = np.full(len(out), np.nan, dtype=float)
-    sigma_gf = np.full(len(out), np.nan, dtype=float)
-
     # Main Prediction
     yhat = fit.model_final.predict(X_full).astype(float)
-    yhat = _maybe_inverse(fit.inv_y, yhat)
-    yhat = _as_1d_float(yhat)
+    yhat = _as_1d_float(_maybe_inverse(fit.inv_y, yhat))
+
+    if is_gap is None and fit.target_col in out.columns:
+        is_gap = out[fit.target_col].isna() & pd.Series(np.isfinite(yhat), index=out.index)
 
     # Ensemble Prediction (using CV models)
+    preds_ens = None
     if fit.ensemble_models:
-        n_models = len(fit.ensemble_models)
-        preds_ens = np.full((n_models, len(X_full)), np.nan, dtype=float)
-        
-        for i, m in enumerate(fit.ensemble_models):
-            p = m.predict(X_full).astype(float)
-            p = _maybe_inverse(fit.inv_y, p)
-            preds_ens[i, :] = _as_1d_float(p)
-
-        # Standard Deviation of the ensemble predictions
-        sigma_ens = np.nanstd(preds_ens, axis=0, ddof=1)
-        sigma_ens = _as_1d_float(sigma_ens)
+        preds_ens = predict_ensemble_matrix(fit.ensemble_models, X_full, inv_y=fit.inv_y)
+        sigma_ens = _as_1d_float(np.nanstd(preds_ens, axis=0, ddof=1))
     else:
         sigma_ens = 0.0
 
     # Residual Uncertainty
-    sigma_resid = fit.resid_model.sigma(yhat)
-    sigma_resid = _as_1d_float(sigma_resid)
+    sigma_resid = _as_1d_float(fit.resid_model.sigma(yhat))
     
     # Combined
     sigma_gf = combine_gapfill_sigma(sigma_ens, sigma_resid, min_sigma=min_sigma)
@@ -934,19 +1461,38 @@ def apply_gapfill_ts(
     out[f"{prefix}_sigmaResid"] = sigma_resid
     out[f"{prefix}_sigmaGF"] = sigma_gf
 
+    if preds_ens is not None and is_gap is not None:
+        mask = is_gap.reindex(out.index).fillna(False).to_numpy(dtype=bool)
+        cum_paths = np.cumsum(preds_ens * mask[None, :], axis=1)
+        out[f"{prefix}_sigmaEnsCum"] = np.std(cum_paths, axis=0, ddof=1)
+
     return out
 
 
 # -----------------------------------------------------------------------------
-# High-Level Reusable Workflows (Unchanged)
+# High-Level Reusable Workflows
 # -----------------------------------------------------------------------------
-# ... (keep merge_gapfill_results and plot_gapfill_dashboard as they were) ...
-# (You can paste the bottom section of your original file here if needed, 
-#  but the logic changes above are self-contained)
+
+@dataclass
+class CumulativeContext:
+    """
+    What's needed to rebuild a correlation-aware cumulative uncertainty band
+    for one column, restarted fresh at any period's start -- matching how
+    the plotted flux cumsum itself restarts per displayed period. A single
+    precomputed whole-season sigma_ens_cum series can't be sliced to a
+    sub-period by subtracting standard deviations (that's not a valid way to
+    get a sub-range's variance); it has to be recomputed from the actual
+    ensemble predictions over that period's rows.
+    """
+    fit: "GapfillFit"
+    df_view: pd.DataFrame          # must contain fit.feature_cols, same index as y_obs
+    sigma_obs: pd.Series
+    is_gap: Optional[pd.Series]    # None => every row counts (e.g. a pure "Predicted" column)
+
 
 def merge_gapfill_results(
     main_df: pd.DataFrame,
-    views: List[Tuple[str, pd.DataFrame, pd.DataFrame]],
+    views: List[Tuple[str, pd.DataFrame, pd.DataFrame, "GapfillFit"]],
     target_flux: str,
     target: str,
     model_type: str,
@@ -954,12 +1500,27 @@ def merge_gapfill_results(
     random_err_col: str,
     prefix: str = "GF",
     qc_levels: List[str] = ["QCF", "QCF0"],
-) -> pd.DataFrame:
-    """Merges gap-filling predictions into main dataframe."""
-    df_final = pd.DataFrame(index=main_df.index)
+    store_uncertainty_inputs: bool = True,
+) -> Tuple[pd.DataFrame, Dict[str, CumulativeContext]]:
+    """
+    Merges gap-filling predictions into main dataframe.
+ 
+    `views` now carries the GapfillFit for each view -- (view_name, df_view,
+    pred_df, fit) -- so a correlation-aware cumulative band can be rebuilt
+    later for any period. Returns (df_final, contexts): contexts maps each
+    filled/predicted column name to what plot_gapfill_dashboard needs to
+    recompute its cumulative uncertainty band.
+ 
+    store_uncertainty_inputs: if True, also stores the raw per-fold
+    ensemble predictions ("{gf_base_name}_ens00".."_ens{K-1}") and the
+    pointwise sigma_obs ("{gf_base_name}_sigmaObs") for each gap-filled
+    column.
+    """
+    columns: Dict[str, pd.Series] = {}
+    contexts: Dict[str, CumulativeContext] = {}
     target_base_root = f"{target_flux}_L3.3_{ustar_cut}"
     
-    for view_name, df_view, pred_df in views:
+    for view_name, df_view, pred_df, fit in views:
         for qc in qc_levels:
             obs_col = f"{target_base_root}_{qc}"
             y_obs = df_view[obs_col].astype(float)
@@ -980,16 +1541,32 @@ def merge_gapfill_results(
             col_sigmaGF = f"{gf_base_name}_sigmaGF"
             col_pred_only = f"{gf_base_name}_yhat"
             
-            df_final[obs_col_out] = y_obs
-            df_final[col_pred_only] = y_hat
-            df_final[col_filled] = y_obs.where(~is_gap, y_hat)
-            df_final[col_isfilled] = is_gap.astype(int)
-            df_final[col_sigmaGF] = sigma_ens
-            df_final[col_sigmaResid] = sigma_resid
-            df_final[col_sigmaEns] = sigma_gf
-            df_final[col_total_unc] = sigma_obs.where(~is_gap, sigma_gf)  
-
-    return df_final
+            columns[obs_col_out] = y_obs.reindex(main_df.index)
+            columns[col_pred_only] = y_hat.reindex(main_df.index)
+            columns[col_filled] = y_obs.where(~is_gap, y_hat).reindex(main_df.index)
+            columns[col_isfilled] = is_gap.astype(int).reindex(main_df.index)
+            columns[col_sigmaGF] = sigma_gf.reindex(main_df.index)          # POINTWISE only -- fine for
+            columns[col_sigmaResid] = sigma_resid.reindex(main_df.index)    # per-row bands, NOT for a
+            columns[col_sigmaEns] = sigma_ens.reindex(main_df.index)        # cumulative sum (see contexts)
+            columns[col_total_unc] = sigma_obs.where(~is_gap, sigma_gf).reindex(main_df.index)
+ 
+            if store_uncertainty_inputs:
+                columns[f"{gf_base_name}_sigmaObs"] = sigma_obs.reindex(main_df.index)
+                preds_ens = predict_ensemble_matrix(fit.ensemble_models, df_view[fit.feature_cols], inv_y=fit.inv_y)
+                for k in range(preds_ens.shape[0]):
+                    columns[f"{gf_base_name}_ens{k:02d}"] = \
+                        pd.Series(preds_ens[k], index=df_view.index).reindex(main_df.index)
+ 
+            # Everything needed to rebuild a correct cumulative band later,
+            # for this column, restarted fresh at any period's start.
+            ctx = CumulativeContext(fit=fit, df_view=df_view, sigma_obs=sigma_obs, is_gap=is_gap)
+            contexts[col_filled] = ctx
+            contexts[col_pred_only] = CumulativeContext(
+                fit=fit, df_view=df_view, sigma_obs=sigma_obs, is_gap=None,
+            )
+ 
+    df_final = pd.DataFrame(columns, index=main_df.index)
+    return df_final, contexts
 
 
 def plot_gapfill_dashboard(
@@ -999,22 +1576,60 @@ def plot_gapfill_dashboard(
     target,
     model_type: str,
     ustar_cut: str,
+    contexts: Dict[str, CumulativeContext],
     qc_levels: List[str] = ["QCF", "QCF0"],
-    parcels: List[str] = ["A", "B"]
+    parcels: List[str] = ["A", "B"],
+    sigma_scale: float = 1.96,
 ):
     import matplotlib.pyplot as plt
 
-    def _plot_flux_with_uncertainty(ax, data, col_val, col_unc=None, label=None, cumulative=False, sigma_scale=1.96):
+    def _cumulative_band(col: str, period_df: pd.DataFrame) -> Optional[pd.Series]:
+        """
+        Correlation-aware cumulative uncertainty for `col`, recomputed fresh
+        over period_df's own rows -- matching how the plotted flux cumsum
+        itself restarts at each period's start. The structural term uses
+        sigma_ens_cumulative (member-path accumulation); sigma_obs/sigma_resid
+        are legitimately independent, so a plain quadrature sum restarted at
+        the period boundary is fine for those.
+        """
+        ctx = contexts.get(col)
+        if ctx is None:
+            return None
+        idx = period_df.index.intersection(ctx.df_view.index)
+        if len(idx) == 0:
+            return None
+
+        sub_view = ctx.df_view.loc[idx]
+        is_gap = ctx.is_gap.reindex(idx).fillna(False) if ctx.is_gap is not None \
+            else pd.Series(True, index=idx)
+        sigma_obs = ctx.sigma_obs.reindex(idx)
+
+        sens_cum = sigma_ens_cumulative(ctx.fit, sub_view, is_gap=is_gap)
+
+        yhat_sub = ctx.fit.model_final.predict(sub_view[ctx.fit.feature_cols]).astype(float)
+        yhat_sub = _as_1d_float(_maybe_inverse(ctx.fit.inv_y, yhat_sub))
+        sigma_resid_sub = pd.Series(ctx.fit.resid_model.sigma(yhat_sub), index=idx)
+
+        sq_obs = (sigma_obs.where(~is_gap, 0.0).fillna(0.0) ** 2).cumsum()
+        sq_res = (sigma_resid_sub.where(is_gap, 0.0).fillna(0.0) ** 2).cumsum()
+        sigma_err = np.sqrt(sq_obs + sq_res + sens_cum ** 2)
+        return sigma_err.reindex(period_df.index)
+
+    def _plot_flux_with_uncertainty(ax, data, col_val, col_unc=None, label=None, cumulative=False):
         if col_val not in data.columns: return
         y = data[col_val]
         if label is None: label = col_val
         y_plot = y.cumsum() if cumulative else y
         line, = ax.plot(data.index, y_plot, label=label, alpha=0.8)
-        
-        if col_unc and col_unc in data.columns:
-            sigma = data[col_unc].fillna(0.0)
-            sigma_plot = np.sqrt((sigma**2).cumsum()) if cumulative else sigma
-            ax.fill_between(data.index, y_plot - sigma_scale*sigma_plot, y_plot + sigma_scale*sigma_plot, color=line.get_color(), alpha=0.2, linewidth=0)
+
+        if cumulative:
+            sigma_plot = _cumulative_band(col_val, data)
+        else:
+            sigma_plot = data[col_unc].fillna(0.0) if (col_unc and col_unc in data.columns) else None
+
+        if sigma_plot is not None:
+            ax.fill_between(data.index, y_plot - sigma_scale * sigma_plot, y_plot + sigma_scale * sigma_plot,
+                             color=line.get_color(), alpha=0.2, linewidth=0)
 
     def _tgt(qc): return f'{target_flux}_L3.3_{ustar_cut}_{qc}'
     def _get_sigma(c):
@@ -1063,5 +1678,3 @@ def plot_gapfill_dashboard(
         fig.suptitle(f"{label} ({start} → {end})", y=0.995, fontsize=14)
         plt.tight_layout()
         plt.show()
-
-

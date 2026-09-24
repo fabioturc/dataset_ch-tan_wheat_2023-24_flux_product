@@ -43,7 +43,8 @@ XG_Partition <- function(data, date_start, date_end) {
   print(head(df_XG$TIMESTAMP_END))
   
   # Convert timestamp to posix
-  df_XG$TIMESTAMP_END <- as.POSIXct(df_XG$TIMESTAMP_END, format="%Y-%m-%d %H:%M:%S", tz = "Etc/GMT-1")
+  # CET clock times parsed as UTC by readr: relabel as CET without shifting the clock (see 51.0 Rmd)
+  df_XG$TIMESTAMP_END <- lubridate::force_tz(as.POSIXct(df_XG$TIMESTAMP_END, format="%Y-%m-%d %H:%M:%S", tz = "UTC"), tzone = "Etc/GMT-1")
   
   assign("df_XG", df_XG, envir = .GlobalEnv)
   
@@ -64,8 +65,8 @@ XG_Partition <- function(data, date_start, date_end) {
     RH = as.numeric(as.character(df_XG$rh)),
     VPD = pmax(as.numeric(as.character(df_XG$vpd)), 0)
     ) %>% 
-    filter(TIMESTAMP >= as.POSIXct(paste0(date_start, ' 00:30:00'))) %>%
-    filter(TIMESTAMP <= as.POSIXct(paste0(date_end, ' 00:00:00'))) %>%
+    filter(TIMESTAMP >= as.POSIXct(paste0(date_start, ' 00:30:00'), tz = attr(TIMESTAMP, 'tzone'))) %>%
+    filter(TIMESTAMP <= as.POSIXct(paste0(date_end, ' 00:00:00'), tz = attr(TIMESTAMP, 'tzone'))) %>%
     mutate(TIMESTAMP_STRING = as.character(TIMESTAMP)) %>%
     mutate(TIMESTAMP_STRING = ifelse(nchar(TIMESTAMP_STRING) == 10, 
                                      paste0(TIMESTAMP_STRING, " 00:00:00"), 
@@ -147,5 +148,6 @@ XG_Partition <- function(data, date_start, date_end) {
 }
 
 # RUN FUNCTION------------------------------------------------------------------
-XG_Partition(filedata, '2023-10-18', '2025-06-05')
+# Dataset period (TIMESTAMP_END): 17 Oct 2023 00:30 to 23 Aug 2024 00:00; must match src/config.py
+XG_Partition(filedata, '2023-10-17', '2024-08-23')
 

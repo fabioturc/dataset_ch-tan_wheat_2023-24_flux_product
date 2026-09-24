@@ -1,16 +1,31 @@
+# ---- Raw data and generated outputs (published on Zenodo) ----
+data/
 *.csv
 *.parquet
 *.png
 *.jpg
 *.pdf
 *.xlsx
-*.dat
-*json
-data/FLUXES/
-data/MANAGEMENT/
-data/METEO/
-notebooks/deprecated/
-.git/
+
+# JSON: ignored, except the tuned hyperparameters of the gap-filling models
+*.json
+!notebooks/80_GAP-FILLING/*/best_hyperparameters_*_XGBoost.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
 .ipynb_checkpoints/
-.Rproj.user
+
+# ---- R / RStudio ----
+.Rproj.user/
 .Rhistory
+.RData
+.Ruserdata
+
+# ---- Editors, OS, sync tools ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.dat

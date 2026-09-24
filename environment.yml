@@ -1,0 +1,19 @@
+# Python environment for the notebooks.
+# diive pins most scientific dependencies (pandas, numpy, xgboost, scikit-learn, ...).
+# For an exact record of the environment used for the final run:
+#   conda env export --no-builds > environment.lock.yml
+name: ch-tan-flux
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - jupyterlab
+  - pip:
+      - diive==0.89.0
+      - shap
+      - windrose
+      - seaborn
+      - pyarrow
+      # only for notebook 11.0 (internal Swiss FluxNet database):
+      # - dbc-influxdb

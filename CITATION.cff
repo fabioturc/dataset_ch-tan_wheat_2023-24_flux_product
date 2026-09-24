@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this dataset or code, please cite it as below."
+title: "CH-TAN wheat 2023-24 flux product: eddy covariance fluxes (CO2, H2O, heat, N2O, CH4), meteorology and management of a winter wheat field in Tänikon, Switzerland (October 2023 - August 2024)"
+type: dataset
+authors:
+  - family-names: Turco
+    given-names: Fabio
+    affiliation: "Grassland Sciences Group, ETH Zurich"
+  - family-names: Hörtnagl
+    given-names: Lukas
+    affiliation: "Grassland Sciences Group, ETH Zurich"
+# TODO: add ORCIDs (orcid: "https://orcid.org/0000-0000-0000-0000") and further authors
+repository-code: "https://github.com/fabioturc/dataset_ch-tan_wheat_2023-24_flux_product"
+doi: "10.5281/zenodo.XXXXXXX"  # TODO: replace after Zenodo upload
+license: MIT
+keywords:
+  - eddy covariance
+  - nitrous oxide
+  - methane
+  - net ecosystem exchange
+  - cropland
+  - winter wheat
+  - Swiss FluxNet
+  - CH-TAN

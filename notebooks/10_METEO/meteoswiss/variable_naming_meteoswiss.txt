@@ -1,0 +1,12 @@
+tre200s0 --> TA at 2 m in °C
+ure200s0 --> RH at 2m
+prestas0 --> PA in hPa
+fve010z0 --> WS in m/s vectorial mean
+fkl010z0 --> WS in m/s scalar mean
+dkl010z0 --> WD in degrees
+rre150z0 --> P in mm
+gre000z0 --> global radiation in w/m2
+ods000z0 --> diffuse radiation in w/m2
+oli000z0 --> LW_IN in w/m2
+olo000z0 --> LW_OUT in w/m2
+osr000z0 --> SW_OUT in w/m2
