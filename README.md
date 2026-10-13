@@ -187,7 +187,7 @@ The flux, management and canopy files cover the whole station record (Oct 2023 �
 
 If you use the data or the code, please cite the dataset (see also [CITATION.cff](CITATION.cff)):
 
-> Turco, F. and Hörtnagl, L. (2026). *Eddy covariance ecosystem fluxes, meteorological data and detailed management information for the cropland site Tänikon in Switzerland, collected between 2023 and 2025* [Data set]. ETH Zurich Research Collection. https://doi.org/10.3929/ethz-c-000807457
+> Turco, F., Hörtnagl, L. and Buchmann, N. (2026). *Eddy covariance ecosystem fluxes, meteorological data and detailed management information for the cropland site Tänikon in Switzerland, collected between 2023 and 2025* [Data set]. ETH Zurich Research Collection. https://doi.org/10.3929/ethz-c-000807457
 
 Each release of this code is archived on Zenodo with its own DOI (see the release page on GitHub); please cite it as well if you use or adapt the code. Release history: [CHANGELOG.md](CHANGELOG.md).
 

@@ -34,6 +34,9 @@ preferred-citation:
     - family-names: Hörtnagl
       given-names: Lukas
       affiliation: "Grassland Sciences Group, ETH Zurich"
+    - family-names: Buchmann
+      given-names: Nina
+      affiliation: "Grassland Sciences Group, ETH Zurich"
   doi: "10.3929/ethz-c-000807457"
   url: "https://doi.org/10.3929/ethz-c-000807457"
   publisher:
