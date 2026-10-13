@@ -1,0 +1,39 @@
+# ---- Raw data and generated outputs (published in the ETH Research Collection) ----
+data/
+*.csv
+*.parquet
+*.png
+*.jpg
+*.pdf
+*.xlsx
+
+# JSON: ignored, except the tuned hyperparameters of the gap-filling models
+*.json
+!notebooks/80_GAP-FILLING/*/best_hyperparameters_*_XGBoost.json
+!.zenodo.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# ---- R / RStudio ----
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# ---- Editors, OS, sync tools ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.dat
+
+# ---- Pipeline runner log, R Markdown outputs of step 51, log of step 81.5 ----
+*.log
+notebooks/80_GAP-FILLING/81_NEE/81.5.1_logfile_*.txt
+notebooks/50_REDDYPROC/*.html
+notebooks/50_REDDYPROC/*.md
+notebooks/50_REDDYPROC/figure/

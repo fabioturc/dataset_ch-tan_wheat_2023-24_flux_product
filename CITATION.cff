@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: "This repository contains the processing code of the CH-TAN wheat 2023-24 flux product. If you use the data or the code, please cite the dataset as below."
+title: "Processing code for the CH-TAN wheat 2023-24 flux product"
+type: software
+abstract: "Jupyter notebooks and R scripts that produce the CH-TAN wheat 2023-24 flux product (version FP2026.10): half-hourly eddy covariance fluxes of CO2, H2O, sensible and latent heat, N2O and CH4, meteorological data and management information of a winter wheat field (17 October 2023 to 22 August 2024) at the Swiss FluxNet cropland site CH-TAN, Tänikon, Switzerland."
+authors:
+  - family-names: Turco
+    given-names: Fabio
+    affiliation: "Grassland Sciences Group, ETH Zurich"
+  - family-names: Hörtnagl
+    given-names: Lukas
+    affiliation: "Grassland Sciences Group, ETH Zurich"
+# TODO: add ORCIDs (orcid: "https://orcid.org/0000-0000-0000-0000") and further authors
+repository-code: "https://github.com/fabioturc/dataset_ch-tan_wheat_2023-24_flux_product"
+version: "0.9.0"
+date-released: "2026-10-13"
+license: MIT
+keywords:
+  - eddy covariance
+  - nitrous oxide
+  - methane
+  - net ecosystem exchange
+  - cropland
+  - winter wheat
+  - Swiss FluxNet
+  - CH-TAN
+preferred-citation:
+  type: dataset
+  title: "Eddy covariance ecosystem fluxes, meteorological data and detailed management information for the cropland site Tänikon in Switzerland, collected between 2023 and 2025"
+  authors:
+    - family-names: Turco
+      given-names: Fabio
+      affiliation: "Grassland Sciences Group, ETH Zurich"
+    - family-names: Hörtnagl
+      given-names: Lukas
+      affiliation: "Grassland Sciences Group, ETH Zurich"
+  doi: "10.3929/ethz-c-000807457"
+  url: "https://doi.org/10.3929/ethz-c-000807457"
+  publisher:
+    name: "ETH Zurich"
+  year: 2026
+  license: CC-BY-4.0

@@ -1,0 +1,173 @@
+Data selected 
+Check timestamp 
+[1] "2023-10-16 23:30:00 UTC" "2023-10-17 00:00:00 UTC"
+[3] "2023-10-17 00:30:00 UTC" "2023-10-17 01:00:00 UTC"
+[5] "2023-10-17 01:30:00 UTC" "2023-10-17 02:00:00 UTC"
+Input data check 
+tibble [14,928 × 9] (S3: tbl_df/tbl/data.frame)
+ $ TIMESTAMP       : POSIXct[1:14928], format: "2023-10-17 00:30:00" "2023-10-17 01:00:00" ...
+ $ NEE_QCF         : num [1:14928] 6.39 6.42 6.32 6.41 6.31 ...
+ $ NEE_QCF0        : num [1:14928] 6.39 6.42 6.32 6.41 6.31 ...
+ $ Ustar           : num [1:14928] NA NA NA NA NA NA NA NA NA NA ...
+ $ Rg              : num [1:14928] 0 0 0 0 0 0 0 0 0 0 ...
+ $ Tair            : num [1:14928] 1.97 1.97 1.57 1.27 1.4 ...
+ $ RH              : num [1:14928] 94.8 95.1 95 94.4 95.6 ...
+ $ VPD             : num [1:14928] 0.366 0.345 0.344 0.377 0.297 ...
+ $ TIMESTAMP_STRING: chr [1:14928] "2023-10-17 00:30:00" "2023-10-17 01:00:00" "2023-10-17 01:30:00" "2023-10-17 02:00:00" ...
+NULL
+Input data ready 
+New sEddyProc class for site 'CH-TAN'
+Check REddyProc timestamp 
+Reference class 'sEddyProc' [package "REddyProc"] with 8 fields
+ $ sID           : chr "CH-TAN"
+ $ sDATA         :'data.frame':	14928 obs. of  7 variables:
+  ..$ sDateTime: POSIXct[1:14928], format: "2023-10-17 00:15:00" "2023-10-17 00:45:00" ...
+  ..$ NEE_QCF  : num [1:14928] 6.39 6.42 6.32 6.41 6.31 ...
+  ..$ NEE_QCF0 : num [1:14928] 6.39 6.42 6.32 6.41 6.31 ...
+  ..$ Rg       : num [1:14928] 0 0 0 0 0 0 0 0 0 0 ...
+  ..$ Tair     : num [1:14928] 1.97 1.97 1.57 1.27 1.4 ...
+  ..$ Ustar    : num [1:14928] NA NA NA NA NA NA NA NA NA NA ...
+  ..$ VPD      : num [1:14928] 0.366 0.345 0.344 0.377 0.297 ...
+ $ sINFO         :List of 6
+  ..$ DIMS   : int 14928
+  ..$ DTS    : num 48
+  ..$ Y.START: num 2023
+  ..$ Y.END  : num 2024
+  ..$ Y.NUMS : num 2
+  ..$ Y.NAME : chr "23-24"
+ $ sLOCATION     :List of 3
+  ..$ LatDeg      : num 47.5
+  ..$ LongDeg     : num 8.91
+  ..$ TimeZoneHour: num 1
+ $ sTEMP         :'data.frame':	14928 obs. of  1 variable:
+  ..$ sDateTime: POSIXct[1:14928], format: "2023-10-17 00:15:00" "2023-10-17 00:45:00" ...
+ $ sUSTAR_DETAILS: list()
+ $ sUSTAR        :'data.frame':	0 obs. of  0 variables
+Formal class 'data.frame' [package "methods"] with 4 slots
+  .. ..@ .Data    : list()
+  .. ..@ names    : chr(0) 
+  .. ..@ row.names: int(0) 
+  .. ..@ .S3Class : chr "data.frame"
+ $ sUSTAR_SCEN   :'data.frame':	0 obs. of  0 variables
+ and 63 methods, of which 49 are  possibly relevant:
+   .sPlotDiurnalCycleM, .sxClosePlot, .sxOpenPlot, .sxSetTitle, initialize,
+   sApplyUStarScen, sCalcPotRadiation, sEstimateUstarScenarios, sEstUstarThold,
+   sEstUstarThreshold, sEstUstarThresholdDistribution, sExportData,
+   sExportResults, sFillInit, sFillLUT, sFillMDC, sFillVPDFromDew, sGetData,
+   sGetEstimatedUstarThresholdDistribution, sGetUstarScenarios,
+   sGetUstarSuffixes, sGLFluxPartition, sGLFluxPartitionUStarScens,
+   sMDSGapFill, sMDSGapFillAfterUstar, sMDSGapFillAfterUStarDistr,
+   sMDSGapFillUStarScens, sMRFluxPartition, sMRFluxPartitionUStarScens,
+   sPlotDailySums, sPlotDailySumsY, sPlotDiurnalCycle, sPlotFingerprint,
+   sPlotFingerprintY, sPlotHHFluxes, sPlotHHFluxesY,
+   sPlotNEEVersusUStarForSeason, sPrintFrames, sRegrE0fromShortTerm, sRegrRref,
+   sSetLocationInfo, sSetUstarScenarios, sSetUStarSeasons, sTKFluxPartition,
+   sTKFluxPartitionUStarScens, sUpdateMethod, update_ustarthreshold_columns,
+   useAnnualUStarThresholds, useSeaonsalUStarThresholds
+ NULL
+NULL
+[1] "2023-10-17 00:15:00 +01" "2023-10-17 00:45:00 +01"
+[3] "2023-10-17 01:15:00 +01" "2023-10-17 01:45:00 +01"
+[5] "2023-10-17 02:15:00 +01" "2023-10-17 02:45:00 +01"
+            sDateTime
+1 2023-10-17 00:15:00
+2 2023-10-17 00:45:00
+3 2023-10-17 01:15:00
+4 2023-10-17 01:45:00
+5 2023-10-17 02:15:00
+6 2023-10-17 02:45:00
+            sDateTime  NEE_QCF NEE_QCF0 Rg      Tair Ustar       VPD
+1 2023-10-17 00:15:00 6.390935 6.390935  0 1.9666667    NA 0.3661582
+2 2023-10-17 00:45:00 6.418233 6.418233  0 1.9666667    NA 0.3450337
+3 2023-10-17 01:15:00 6.315847 6.315847  0 1.5666667    NA 0.3443809
+4 2023-10-17 01:45:00 6.406403 6.406403  0 1.2666667    NA 0.3771894
+5 2023-10-17 02:15:00 6.313333 6.313333  0 1.4000000    NA 0.2974560
+6 2023-10-17 02:45:00 6.226810 6.226810  0 0.9333333    NA 0.3486037
+REddyProc ready 
+Start MDS Gapfilling 
+Initialized variable 'Tair' with 0 real gaps for gap filling.
+Limited MDS algorithm for gap filling of 'Tair' with LUT(Rg only) and MDC.
+Finished gap filling of 'Tair' in 0 seconds. Artificial gaps filled: 14928, real gaps filled: 0, unfilled (long) gaps: 0.
+Initialized variable 'Rg' with 0 real gaps for gap filling.
+Restriced MDS algorithm for gap filling of 'Rg' with no meteo conditions and hence only MDC.
+Finished gap filling of 'Rg' in 0 seconds. Artificial gaps filled: 14928, real gaps filled: 0, unfilled (long) gaps: 0.
+Initialized variable 'VPD' with 0 real gaps for gap filling.
+Limited MDS algorithm for gap filling of 'VPD' with LUT(Rg only) and MDC.
+Finished gap filling of 'VPD' in 0 seconds. Artificial gaps filled: 14928, real gaps filled: 0, unfilled (long) gaps: 0.
+Meteo gapfilled 
+Initialized variable 'NEE_QCF' with 0 real gaps for gap filling of all 14928 values (to estimate uncertainties).
+Full MDS algorithm for gap filling of 'NEE_QCF' with LUT(Rg, VPD, Tair) and MDC.
+Look up table with window size of 7 days with Rg VPD Tair
+............................................................
+.............................................................
+..............................14890
+Look up table with window size of 14 days with Rg VPD Tair
+19
+Look up table with window size of 7 days with Rg
+14
+Mean diurnal course with window size of 0 days: .
+5
+Finished gap filling of 'NEE_QCF' in 5 seconds. Artificial gaps filled: 14928, real gaps filled: 0, unfilled (long) gaps: 0.
+NEE QCF already gapfilled with XGBoost was gapfilled with MDS if any gaps still existing
+Initialized variable 'NEE_QCF0' with 0 real gaps for gap filling of all 14928 values (to estimate uncertainties).
+Full MDS algorithm for gap filling of 'NEE_QCF0' with LUT(Rg, VPD, Tair) and MDC.
+Look up table with window size of 7 days with Rg VPD Tair
+............................................................
+.............................................................
+..............................14890
+Look up table with window size of 14 days with Rg VPD Tair
+19
+Look up table with window size of 7 days with Rg
+14
+Mean diurnal course with window size of 0 days: .
+5
+Finished gap filling of 'NEE_QCF0' in 5 seconds. Artificial gaps filled: 14928, real gaps filled: 0, unfilled (long) gaps: 0.
+NEE QCF0 already gapfilled with XGBoost was gapfilled with MDS if any gaps still existing
+Start partitioning 
+Start flux partitioning for variable NEE_QCF_f with temperature Tair_f.
+Estimate of the temperature sensitivity E_0 from short term data: 175.63.
+Regression of reference temperature R_ref for 76 periods.
+Start daytime flux partitioning for variable NEE_QCF_f with temperature Tair_f.
+  Estimating temperature sensitivity from night time NEE , 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+    increase window size to 24, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+    increase window size to 48, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+  Smoothing temperature sensitivity estimates
+  Estimating respiration at reference temperature for smoothed temperature sensitivity from night time NEE , 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+  Estimating light response curve parameters from day time NEE , 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+NEE QCF already gapfilled with XGBoost was partitioned
+Start flux partitioning for variable NEE_QCF0_f with temperature Tair_f.
+Estimate of the temperature sensitivity E_0 from short term data: 175.63.
+Regression of reference temperature R_ref for 76 periods.
+Start daytime flux partitioning for variable NEE_QCF0_f with temperature Tair_f.
+  Estimating temperature sensitivity from night time NEE , 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+    increase window size to 24, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+    increase window size to 48, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+  Smoothing temperature sensitivity estimates
+  Estimating respiration at reference temperature for smoothed temperature sensitivity from night time NEE , 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+  Estimating light response curve parameters from day time NEE , 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253, 255, 257, 259, 261, 263, 265, 267, 269, 271, 273, 275, 277, 279, 281, 283, 285, 287, 289, 291, 293, 295, 297, 299, 301, 303, 305, 307, 309
+NEE QCF0 already gapfilled with XGBoost was partitioned
+Files saved as: 81.5.1_NEE_XG-GAPF_PART_ReddyProc.csv
+Saved plot to: notebooks/80_GAP-FILLING/81_NEE/plots/CH-TAN_23-24_FP_GPP_QCF_f.pdf
+Saved plot to: notebooks/80_GAP-FILLING/81_NEE/plots/CH-TAN_23-24_FP_GPP_DT_QCF.pdf
+Saved plot to: notebooks/80_GAP-FILLING/81_NEE/plots/CH-TAN_23-24_FP_Reco_QCF.pdf
+Saved plot to: notebooks/80_GAP-FILLING/81_NEE/plots/CH-TAN_23-24_FP_Reco_DT_QCF.pdf
+Saved plot to: notebooks/80_GAP-FILLING/81_NEE/plots/CH-TAN_23-24_FP_GPP_QCF0_f.pdf
+Saved plot to: notebooks/80_GAP-FILLING/81_NEE/plots/CH-TAN_23-24_FP_GPP_DT_QCF0.pdf
+Saved plot to: notebooks/80_GAP-FILLING/81_NEE/plots/CH-TAN_23-24_FP_Reco_QCF0.pdf
+Saved plot to: notebooks/80_GAP-FILLING/81_NEE/plots/CH-TAN_23-24_FP_Reco_DT_QCF0.pdf
+Partitioning done 
+Warnmeldungen:
+1: In fCheckOutsideRange(Data.F, VarName.V.s[v.i], c("<", -50), SubCallFunc.s) :
+  sEddyProc.initialize:::fCheckColPlausibility:::fCheckOutsideRange::: Variable outside (plausible) range in 11 cases! Invalid values with 'NEE_QCF < -50': -54, -51, -53, -57, -51, -51, -51, -60, -57, -60, -51 ...
+2: In fCheckOutsideRange(Data.F, VarName.V.s[v.i], c("<", -50), SubCallFunc.s) :
+  sEddyProc.initialize:::fCheckColPlausibility:::fCheckOutsideRange::: Variable outside (plausible) range in 11 cases! Invalid values with 'NEE_QCF0 < -50': -54, -51, -53, -57, -51, -51, -51, -60, -57, -60, -51 ...
+3: In fCheckOutsideRange(Data.F, VarName.V.s[v.i], c("<", -50), SubCallFunc.s) :
+  sMRFluxPartition:::fCheckColPlausibility:::fCheckOutsideRange::: Variable outside (plausible) range in 11 cases! Invalid values with 'NEE_QCF_f < -50': -54, -51, -53, -57, -51, -51, -51, -60, -57, -60, -51 ...
+4: In fCheckOutsideRange(Data.F, VarName.V.s[v.i], c("<", -50), SubCallFunc.s) :
+  sGLFluxPartition:::fCheckColPlausibility:::fCheckOutsideRange::: Variable outside (plausible) range in 11 cases! Invalid values with 'NEE_QCF_f < -50': -54, -51, -53, -57, -51, -51, -51, -60, -57, -60, -51 ...
+5: In fCheckOutsideRange(Data.F, VarName.V.s[v.i], c("<", -50), SubCallFunc.s) :
+  sMRFluxPartition:::fCheckColPlausibility:::fCheckOutsideRange::: Variable outside (plausible) range in 11 cases! Invalid values with 'NEE_QCF0_f < -50': -54, -51, -53, -57, -51, -51, -51, -60, -57, -60, -51 ...
+6: In fCheckOutsideRange(Data.F, VarName.V.s[v.i], c("<", -50), SubCallFunc.s) :
+  sGLFluxPartition:::fCheckColPlausibility:::fCheckOutsideRange::: Variable outside (plausible) range in 11 cases! Invalid values with 'NEE_QCF0_f < -50': -54, -51, -53, -57, -51, -51, -51, -60, -57, -60, -51 ...
+7: In EddyProc.C$sGLFluxPartition(suffix = "QCF0") :
+  replacing existing output columnsFP_VARday, NEW_FP_Temp, NEW_FP_VPD, FP_RRef_Night, FP_qc, FP_dRecPar, FP_errorcode, FP_GPP2000, FP_OPT_VPD, FP_OPT_NoVPD, FP_k, FP_beta, FP_alpha, FP_RRef, FP_E0, FP_k_sd, FP_beta_sd, FP_alpha_sd, FP_RRef_sd, FP_E0_sd

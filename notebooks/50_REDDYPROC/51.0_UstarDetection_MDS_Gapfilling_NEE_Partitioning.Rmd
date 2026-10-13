@@ -1,0 +1,249 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+|                                    |
+|------------------------------------|
+| Title: "Ustar threshold detection and MDS gapfilling" |
+| Author: "Fabio Turco"              |
+| Date: "2024-04-24"                 |
+| Output:                            |
+| pdf_document: default              |
+| html_document: default             |
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+**Script to detect seasonal Ustar thresholds from level-3.2 fluxes.\
+**In addition, the script is conducting MDS gap-filling of NEE, LE and H.\
+**Finally, night-time partitioning is conducted for 16, 50, and 84 NEE CUTs.
+
+HIGHEST QUALITY ONLY (QCF=0) FLUXES (\_L3.1_L3.2_QCF0), quality-controlled with Level-2 and Level-3.2 flags, including Level-3.1 storage correction are used for the ustar detection.
+
+## LIBRARIES
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(REddyProc)
+library(caTools)
+library(data.table)
+library(viridis)
+```
+
+Define the run ID
+```{r}
+run_id <- format(Sys.time(), "%Y%m%d",tz="GMT")
+print(run_id)
+```
+
+## SOURCE FILE
+```{r}
+file_fluxes_meteo <- "../40_FLUX_PROCESSING_CHAIN/46.2_FluxProcessingChain_L3.2_subset-forREddyProc.csv"
+```
+
+## DATA FROM FILE
+
+-   Timestamp is in Etc/GMT-1
+-   Need to provide an end timestamp because EddyProc is shifting to the middle internally by subtracting 15 minutes
+
+```{r}
+filedata <- read_csv(file_fluxes_meteo, show_col_types = FALSE)
+# TIMESTAMP_END holds CET clock times, which readr parses as UTC: relabel as CET without shifting the clock
+# (as.POSIXct(<POSIXct>, tz = ...) shifts the clock time in R >= 4.3)
+filedata$TIMESTAMP_END <- lubridate::force_tz(as.POSIXct(filedata$TIMESTAMP_END, tz = "UTC"), tzone = "Etc/GMT-1")
+```
+## TIME INTERVAL
+
+Dataset period: 17 Oct 2023 00:00 to 23 Aug 2024 00:00 (TIMESTAMP_END, CET). Must match `PERIOD_START` / `PERIOD_END` in `src/config.py`.
+
+```{r}
+filedata <- filedata %>% filter(TIMESTAMP_END > as.POSIXct('2023-10-17 00:00:00', tz = 'Etc/GMT-1')
+                                & TIMESTAMP_END <= as.POSIXct('2024-08-23 00:00:00', tz = 'Etc/GMT-1'))
+
+summary(filedata[c('TIMESTAMP_END', 'NEE_L3.1_L3.2_QCF', 'sw_in', 'ta', 'vpd')], 3)
+```
+## DATA COLUMNS
+
+**Using QCF fluxes**
+```{r}
+EddyData.F <- filedata[FALSE]
+
+EddyData.F$TIMESTAMP <- filedata$TIMESTAMP_END
+
+EddyData.F$NEE <- filedata$NEE_L3.1_L3.2_QCF
+
+EddyData.F$LE <- filedata$LE_L3.1_L3.2_QCF
+
+EddyData.F$H <- filedata$H_L3.1_L3.2_QCF
+
+EddyData.F$Ustar <- filedata$USTAR
+
+EddyData.F$Rg <- filedata$sw_in
+
+EddyData.F$Tair <- filedata$ta
+
+# vpd is in kPa (diive), REddyProc expects VPD in hPa
+EddyData.F$VPD <- filedata$vpd * 10
+
+```
+
+## EDDYPROC CONFIGURATION
+
+### Initialize R5 reference class
+```{r}
+EddyProc.C <-sEddyProc$new('CH-TAN',  EddyData.F,
+                           c('NEE', 'Rg','Tair', 'VPD', 'LE', 'H', 'Ustar'), ColPOSIXTime = "TIMESTAMP")   
+EddyProc.C$sSetLocationInfo(LatDeg = 47.480620, LongDeg = 8.911868, TimeZoneHour = 1)   
+head(EddyProc.C$sDATA)
+```
+
+### Define seasons
+
+Seasons defined based on the management events of the winter wheat season 2023-24:
+
+-   on 290 2023 start of dataset (manure application; wheat sowing on DOY 291)
+-   on 122 2024 wheat height >  30 cm
+-   on 208 2024 wheat harvested (bare soil until the end of the dataset on 22 Aug 2024)
+
+```{r}
+y <- c(2023, 2024, 2024)
+s <- c(290, 122, 208)
+seasonStarts <- as.data.frame(cbind(s,y))
+seasonFactor <- usCreateSeasonFactorYdayYear(EddyData.F$TIMESTAMP, starts=seasonStarts)
+seasonStartsDate <-fConvertTimeToPosix(data.frame(Year=seasonStarts[, 2],
+                                                  DoY=seasonStarts[, 1],
+                                                  Hour=12),
+                                       'YDH', Year = "Year", Day = "DoY", Hour = "Hour")
+print(seasonStartsDate)
+```
+
+## SEASONAL USTAR DETECTION
+```{r}
+# Fix the random seed: the u* thresholds are estimated from bootstrap samples (nSample),
+# so without a seed every run gives slightly different thresholds and L3.3 fluxes
+set.seed(42)
+EddyProc.C$sEstimateUstarScenarios(
+
+  seasonFactor = seasonFactor,
+  nSample = 200L, # nsample: how many bootstrap samples you want for your data
+  probs = c(0.16, 0.5, 0.84)
+  )
+
+# display ustar scenarios with
+(uStarTh <- EddyProc.C$sGetEstimatedUstarThresholdDistribution())
+
+# display ustar scenarios
+EddyProc.C$useSeaonsalUStarThresholds()
+```
+
+Plot detected ustar thresholds over time
+
+Seasonal ustar 50% thresholds
+```{r}
+uStarTh %>%
+  na.omit() %>%
+  ggplot(aes(x = season)) +
+  geom_point(aes(y = `50%`)) +
+  geom_errorbar(aes(ymin = `16%`, ymax = `84%`),
+                linewidth = 1, alpha = 0.2, width = 0) +
+  theme_classic()
+```
+
+Annual ustar 50% thresholds
+```{r}
+uStarTh %>%
+  filter(aggregationMode == 'year') %>%
+  ggplot(aes(x = seasonYear)) +
+  geom_point(aes(y = `50%`)) +
+  geom_errorbar(aes(ymin = `16%`, ymax = `84%`),
+                linewidth = 1, alpha = 0.2, width = 0)  +
+  theme_classic()
+ 
+```
+## MDS GAP-FILLING
+
+### NEE
+
+**I have not dealt with the issue of negative values filled by MDS during night**
+```{r}
+EddyProc.C$sMDSGapFillUStarScens(fluxVar = 'NEE', 
+                                 isFilterDayTime = TRUE,
+                                 isFlagEntryAfterLowTurbulence= TRUE)
+grep("NEE_.*_f$",names(EddyProc.C$sExportResults()), value = TRUE)
+grep("NEE_.*_fsd$",names(EddyProc.C$sExportResults()), value = TRUE)
+EddyProc.C$sPlotFingerprint('NEE_U16_orig')
+EddyProc.C$sPlotFingerprint('NEE_U50_orig')
+EddyProc.C$sPlotFingerprint('NEE_U84_orig')
+EddyProc.C$sPlotFingerprint('NEE_U16_f')
+EddyProc.C$sPlotFingerprint('NEE_U50_f')
+EddyProc.C$sPlotFingerprint('NEE_U84_f')
+```
+
+Assessment of how many data points get filtered by Ustar filtering
+```{r}
+cc <- EddyProc.C$sDATA$Ustar < EddyProc.C$sTEMP$`Ustar_U50_Thres`
+print(paste('Ustar threshold 50%:',sum(cc, na.rm=TRUE), 'datapoints (=',round(sum(cc,na.rm=TRUE)/length(cc)*100, digits=2),'%) are below the seasonal ustar threshold'))
+# see which of the datapoints are already NAs
+na <- which(is.na(EddyProc.C$sDATA$NEE))
+us <- which(cc==TRUE)
+matching.pos <- intersect(na,us) # these values are already NA in the data
+diff <- length(us) - length(matching.pos) # subtract them from the original ustar length
+print(paste('Ustar threshold 50%:',diff, 'datapoints (=',round(diff/length(cc)*100, digits=2),'%) get additionaly set to NA by ustar filtering'))
+dummy <- EddyProc.C$sDATA$NEE
+dummy[us] <- NA
+print(paste('Data availability NEE before ustar filtering:',round(sum(!is.na(EddyProc.C$sDATA$NEE))/length(EddyProc.C$sDATA$NEE)*100, digits=2),'%'))
+print(paste('Data availability NEE after ustar (U50) filtering:',round(sum(!is.na(dummy))/length(dummy)*100, digits=2),'%'))
+```
+
+### LE and H
+
+```{r}
+EddyProc.C$sMDSGapFill('LE', FillAll = TRUE, isVerbose = TRUE)
+EddyProc.C$sPlotFingerprint('LE_orig')
+EddyProc.C$sPlotFingerprint('LE_f')
+EddyProc.C$sMDSGapFill('H', FillAll = TRUE, isVerbose = TRUE)
+EddyProc.C$sPlotFingerprint('H_orig')
+EddyProc.C$sPlotFingerprint('H_f')
+```
+## NEE PARTITIONING
+
+```{r}
+# We first need to gap-fill Tair, otherwise it could give error, although it should be without gaps
+EddyProc.C$sMDSGapFill('Tair', FillAll = FALSE)
+# NIGHT-TIME PARTITIONING
+EddyProc.C$sMRFluxPartition(suffix = 'U16')
+EddyProc.C$sMRFluxPartition(suffix = 'U84') 
+EddyProc.C$sMRFluxPartition(suffix = 'U50')
+EddyProc.C$sPlotFingerprint('GPP_U50_f')
+```
+
+
+## EXPORT RESULTS
+
+Select the new columns to be exported
+```{r}
+FilledEddyData.F <- EddyProc.C$sExportResults()
+
+# keep the timestamp information and the calculated VPD:
+FilledEddyData.F$TIMESTAMP_END <- EddyData.F$TIMESTAMP
+FilledEddyData.F = FilledEddyData.F %>%
+  dplyr::select(TIMESTAMP_END, Ustar_U16_Thres, Ustar_U50_Thres, Ustar_U84_Thres, 
+                NEE_U16_f, NEE_U50_f, NEE_U84_f, 
+                GPP_U16_f, GPP_U50_f,GPP_U84_f,
+                Reco_U16, Reco_U50, Reco_U84,
+                LE_f, H_f)
+head(FilledEddyData.F)
+
+```
+
+Save as csv
+
+```{r}
+# write csv file
+write_csv(FilledEddyData.F, './51.1_UstarThresholds_MDS-gapfilled_NEE-partitioned.csv')
+```
+
